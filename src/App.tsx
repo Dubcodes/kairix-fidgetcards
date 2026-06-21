@@ -1,4 +1,4 @@
-import { motion, useAnimationControls, useMotionValue, useTransform, type PanInfo } from "framer-motion";
+import { animate, motion, useAnimationControls, useMotionValue, useTransform, type PanInfo } from "framer-motion";
 import { Eye, EyeOff, Maximize2, Minimize2, RotateCcw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -101,7 +101,7 @@ export default function App() {
   const [cards, setCards] = useState<Card[]>(createInitialCards);
   const [flyingCards, setFlyingCards] = useState<FlyingCard[]>([]);
   const [thrown, setThrown] = useState(0);
-  const [showCounter, setShowCounter] = useState(true);
+  const [showControls, setShowControls] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const flightId = useRef(0);
   const controls = useAnimationControls();
@@ -123,18 +123,26 @@ export default function App() {
   );
 
   useEffect(() => {
-    controls.set({ x: 0, y: 0, rotate: 0, scale: 1, opacity: 1 });
+    controls.set({ rotate: 0, scale: 1, opacity: 1 });
     x.set(0);
-    y.set(0);
+    y.set(14);
+    const rise = animate(y, 0, {
+      type: "spring",
+      stiffness: 360,
+      damping: 32,
+      mass: 0.75,
+    });
+
+    return () => rise.stop();
   }, [controls, topCard.id, x, y]);
 
   const completeThrow = useCallback(
     (directionX: number, directionY: number, velocity: number, spin: number, startX = 0, startY = 0) => {
       const magnitude = Math.max(1, Math.hypot(directionX, directionY));
-      const speedBoost = Math.min(2.9, Math.max(0.9, velocity / 850));
+      const speedBoost = Math.min(3.8, Math.max(1, velocity / 760));
       const targetX = (directionX / magnitude) * THROW_DISTANCE * speedBoost;
       const targetY = (directionY / magnitude) * THROW_DISTANCE * speedBoost;
-      const duration = Math.max(0.12, Math.min(0.34, 0.42 - velocity / 4200));
+      const duration = Math.max(0.38, Math.min(0.82, 0.9 - velocity / 4600));
       const startRotate = Math.max(-14, Math.min(14, startX / 26));
       const nextFlightId = flightId.current + 1;
       flightId.current = nextFlightId;
@@ -155,9 +163,9 @@ export default function App() {
       ]);
       setThrown((value) => value + 1);
       setCards((value) => nextStack(value));
-      controls.set({ x: 0, y: 0, rotate: 0, scale: 1, opacity: 1 });
+      controls.set({ rotate: 0, scale: 1, opacity: 1 });
       x.set(0);
-      y.set(0);
+      y.set(14);
       vibrate();
     },
     [controls, topCard, x, y],
@@ -255,7 +263,7 @@ export default function App() {
 
       if (key === "c") {
         event.preventDefault();
-        setShowCounter((value) => !value);
+        setShowControls((value) => !value);
         return;
       }
 
@@ -276,32 +284,36 @@ export default function App() {
   return (
     <main className="app" style={{ background: theme.background }}>
       <div className="topBar">
-        {showCounter ? (
+        <button
+          className="iconButton"
+          type="button"
+          onClick={() => setShowControls((value) => !value)}
+          aria-label={showControls ? "Hide controls" : "Show controls"}
+          title={showControls ? "Hide controls (C)" : "Show controls (C)"}
+        >
+          {showControls ? <EyeOff size={17} strokeWidth={2.4} /> : <Eye size={17} strokeWidth={2.4} />}
+        </button>
+        {showControls ? (
           <div className="counter" aria-live="polite">
             <span>{thrown}</span>
           </div>
         ) : null}
-        <button
-          className="iconButton"
-          type="button"
-          onClick={() => setShowCounter((value) => !value)}
-          aria-label="Toggle counter"
-          title="Toggle counter"
-        >
-          {showCounter ? <EyeOff size={17} strokeWidth={2.4} /> : <Eye size={17} strokeWidth={2.4} />}
-        </button>
-        <button className="iconButton reset" type="button" onClick={resetCounter} aria-label="Reset counter" title="Reset counter">
-          <RotateCcw size={17} strokeWidth={2.4} />
-        </button>
-        <button
-          className="iconButton"
-          type="button"
-          onClick={() => void toggleFullscreen()}
-          aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-          title={isFullscreen ? "Exit fullscreen (F)" : "Enter fullscreen (F)"}
-        >
-          {isFullscreen ? <Minimize2 size={17} strokeWidth={2.4} /> : <Maximize2 size={17} strokeWidth={2.4} />}
-        </button>
+        {showControls ? (
+          <>
+            <button className="iconButton reset" type="button" onClick={resetCounter} aria-label="Reset counter" title="Reset counter">
+              <RotateCcw size={17} strokeWidth={2.4} />
+            </button>
+            <button
+              className="iconButton"
+              type="button"
+              onClick={() => void toggleFullscreen()}
+              aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+              title={isFullscreen ? "Exit fullscreen (F)" : "Enter fullscreen (F)"}
+            >
+              {isFullscreen ? <Minimize2 size={17} strokeWidth={2.4} /> : <Maximize2 size={17} strokeWidth={2.4} />}
+            </button>
+          </>
+        ) : null}
       </div>
 
       <section className="stage" aria-label="Swipe cards">
@@ -317,18 +329,27 @@ export default function App() {
               dragMomentum={false}
               dragElastic={0.12}
               onDragEnd={(_, info) => throwCard(info)}
-              animate={isTop ? controls : undefined}
+              animate={
+                isTop
+                  ? controls
+                  : {
+                      y: depth * 14,
+                      rotate: depth * -1.6,
+                      scale: 1 - depth * 0.035,
+                    }
+              }
+              transition={{ type: "spring", stiffness: 360, damping: 32, mass: 0.75 }}
               style={{
                 x: isTop ? x : 0,
-                y: isTop ? y : depth * 14,
-                rotate: isTop ? rotate : depth * -1.6,
+                y: isTop ? y : undefined,
+                rotate: isTop ? rotate : undefined,
                 backgroundColor: colorToCss(card.color),
                 borderColor: colorToCss(card.color, 12, -18),
                 boxShadow: isTop
                   ? "0 28px 80px rgba(0, 0, 0, 0.24), 0 1px 0 rgba(255, 255, 255, 0.3) inset"
                   : "0 16px 45px rgba(0, 0, 0, 0.16)",
                 zIndex: index + 1,
-                scale: 1 - depth * 0.035,
+                scale: isTop ? 1 : undefined,
               }}
               whileTap={isTop ? { scale: 0.985, cursor: "grabbing" } : undefined}
             />

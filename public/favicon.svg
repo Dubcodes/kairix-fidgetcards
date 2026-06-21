@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="#fbf7ef"/>
+  <g filter="url(#shadow)">
+    <rect x="14" y="16" width="34" height="40" rx="5" fill="#5bd48d" transform="rotate(-13 31 36)"/>
+    <rect x="18" y="10" width="34" height="40" rx="5" fill="#6aa8ff" transform="rotate(8 35 30)"/>
+    <rect x="15" y="13" width="34" height="40" rx="5" fill="#ff6f91" transform="rotate(-4 32 33)"/>
+    <rect x="20" y="8" width="30" height="36" rx="5" fill="#ffd166" transform="rotate(13 35 26)"/>
+  </g>
+  <path d="M26 22c5-4 12-3 16 2" fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round" opacity=".75"/>
+  <defs>
+    <filter id="shadow" x="4" y="0" width="56" height="64" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="4" stdDeviation="3" flood-color="#2d2a24" flood-opacity=".24"/>
+    </filter>
+  </defs>
+</svg>
