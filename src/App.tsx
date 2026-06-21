@@ -26,7 +26,6 @@ type FlyingCard = Card & {
 
 const CARD_COUNT = 4;
 const MIN_HUE_DISTANCE = 36;
-const THROW_DISTANCE = 1180;
 const THROW_VELOCITY = 650;
 const THROW_OFFSET = 130;
 const KEYBOARD_THROW_VELOCITY = 980;
@@ -97,6 +96,21 @@ function vibrate() {
   }
 }
 
+function getExitDistance(unitX: number, unitY: number, startX: number, startY: number) {
+  const stage = document.querySelector<HTMLElement>(".stage");
+  const stageRect = stage?.getBoundingClientRect();
+  const viewportWidth = window.innerWidth || 1280;
+  const viewportHeight = window.innerHeight || 720;
+  const cardWidth = stageRect?.width ?? Math.min(viewportWidth * 0.76, 560);
+  const cardHeight = stageRect?.height ?? Math.min(viewportHeight * 0.72, 720);
+  const exitX =
+    Math.abs(unitX) > 0.04 ? (viewportWidth / 2 + cardWidth / 2 + Math.abs(startX) + 180) / Math.abs(unitX) : Infinity;
+  const exitY =
+    Math.abs(unitY) > 0.04 ? (viewportHeight / 2 + cardHeight / 2 + Math.abs(startY) + 180) / Math.abs(unitY) : Infinity;
+
+  return Math.min(exitX, exitY);
+}
+
 export default function App() {
   const [cards, setCards] = useState<Card[]>(createInitialCards);
   const [flyingCards, setFlyingCards] = useState<FlyingCard[]>([]);
@@ -139,10 +153,13 @@ export default function App() {
   const completeThrow = useCallback(
     (directionX: number, directionY: number, velocity: number, spin: number, startX = 0, startY = 0) => {
       const magnitude = Math.max(1, Math.hypot(directionX, directionY));
-      const speedBoost = Math.min(1.75, Math.max(0.9, velocity / 1050));
-      const targetX = (directionX / magnitude) * THROW_DISTANCE * speedBoost;
-      const targetY = (directionY / magnitude) * THROW_DISTANCE * speedBoost;
-      const duration = Math.max(0.58, Math.min(0.9, 0.98 - velocity / 5200));
+      const unitX = directionX / magnitude;
+      const unitY = directionY / magnitude;
+      const speedBoost = Math.min(1.08, Math.max(1, velocity / 3600));
+      const exitDistance = getExitDistance(unitX, unitY, startX, startY) * speedBoost;
+      const targetX = unitX * exitDistance;
+      const targetY = unitY * exitDistance;
+      const duration = Math.max(1.7, Math.min(2.15, 2.2 - velocity / 11000));
       const startRotate = Math.max(-14, Math.min(14, startX / 26));
       const nextFlightId = flightId.current + 1;
       flightId.current = nextFlightId;
@@ -376,7 +393,7 @@ export default function App() {
             }}
             transition={{
               duration: card.duration,
-              ease: [0.18, 0.72, 0.28, 1],
+              ease: "linear",
             }}
             onAnimationComplete={() => {
               setFlyingCards((value) => value.filter((flyingCard) => flyingCard.flightId !== card.flightId));
