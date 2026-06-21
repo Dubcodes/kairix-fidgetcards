@@ -25,17 +25,18 @@ type CardVisuals = {
   finishKind: FinishKind;
 };
 
-type FlyingCard = Card &
-  CardVisuals & {
-    flightId: number;
-    startX: number;
-    startY: number;
-    startRotate: number;
-    targetX: number;
-    targetY: number;
-    targetRotate: number;
-    duration: number;
-  };
+type StackCard = Card & CardVisuals;
+
+type FlyingCard = StackCard & {
+  flightId: number;
+  startX: number;
+  startY: number;
+  startRotate: number;
+  targetX: number;
+  targetY: number;
+  targetRotate: number;
+  duration: number;
+};
 
 type Particle = {
   id: number;
@@ -382,18 +383,18 @@ function linePath(cardId: number, lineIndex: number, patternLevel: number) {
 
 function lineStroke(color: CardColor, cardId: number, lineIndex: number, randomLineColor: boolean) {
   if (!randomLineColor) {
-    return "hsl(0 0% 5% / 0.68)";
+    return "hsl(0 0% 4% / 0.86)";
   }
 
   const hue = (color.hue + 130 + lineIndex * 47 + Math.round(seededBetween(cardId + lineIndex, -18, 18))) % 360;
   const lightness = seededBetween(cardId * 13 + lineIndex, 42, 88);
 
-  return `hsl(${hue} 88% ${lightness.toFixed(1)}% / 0.9)`;
+  return `hsl(${hue} 88% ${lightness.toFixed(1)}% / 0.96)`;
 }
 
 function lineWidth(cardId: number, lineIndex: number, randomLineColor: boolean) {
-  const min = randomLineColor ? 1.25 : 1.15;
-  const max = randomLineColor ? 2.25 : 2.05;
+  const min = randomLineColor ? 0.85 : 0.75;
+  const max = randomLineColor ? 1.55 : 1.35;
 
   return seededBetween(cardId * 29 + lineIndex, min, max).toFixed(1);
 }
@@ -598,26 +599,32 @@ function CardFinish({ card, kind }: { card: Card; kind: FinishKind }) {
   );
 }
 
-function createInitialCards() {
-  const cards: Card[] = [];
+function createStackCard(id: number, previousColor: CardColor | undefined, count: number): StackCard {
+  const card = {
+    id,
+    color: createColor(previousColor),
+  };
+
+  return {
+    ...card,
+    ...getVisuals(card, count),
+  };
+}
+
+function createInitialCards(count = 0) {
+  const cards: StackCard[] = [];
   for (let id = 0; id < CARD_COUNT; id += 1) {
-    cards.push({
-      id,
-      color: createColor(cards[cards.length - 1]?.color),
-    });
+    cards.push(createStackCard(id, cards[cards.length - 1]?.color, count));
   }
   return cards;
 }
 
-function nextStack(cards: Card[]) {
+function nextStack(cards: StackCard[], count: number) {
   const bottomColor = cards[0]?.color;
   const nextId = Math.max(...cards.map((card) => card.id)) + 1;
 
   return [
-    {
-      id: nextId,
-      color: createColor(bottomColor),
-    },
+    createStackCard(nextId, bottomColor, count),
     ...cards.slice(0, -1),
   ];
 }
@@ -663,7 +670,7 @@ function createParticles(card: Card, startX: number, startY: number, nextId: num
 }
 
 export default function App() {
-  const [cards, setCards] = useState<Card[]>(createInitialCards);
+  const [cards, setCards] = useState<StackCard[]>(createInitialCards);
   const [flyingCards, setFlyingCards] = useState<FlyingCard[]>([]);
   const [particles, setParticles] = useState<Particle[]>([]);
   const [thrown, setThrown] = useState(0);
@@ -672,6 +679,7 @@ export default function App() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const flightId = useRef(0);
   const particleId = useRef(0);
+  const thrownRef = useRef(0);
   const lastThrowAt = useRef(0);
   const controls = useAnimationControls();
   const x = useMotionValue(0);
@@ -726,12 +734,13 @@ export default function App() {
       const duration = Math.max(1.7, Math.min(2.15, 2.2 - velocity / 11000));
       const startRotate = Math.max(-14, Math.min(14, startX / 26));
       const nextFlightId = flightId.current + 1;
-      const flyingVisuals = getVisuals(topCard, thrown);
+      const nextThrown = thrownRef.current + 1;
       const now = Date.now();
       const previousThrowAt = lastThrowAt.current;
       const nextParticleId = particleId.current + 10;
       flightId.current = nextFlightId;
       particleId.current = nextParticleId;
+      thrownRef.current = nextThrown;
       lastThrowAt.current = now;
 
       setFlyingCards((value) => [
@@ -739,12 +748,6 @@ export default function App() {
         {
           ...topCard,
           flightId: nextFlightId,
-          isGradient: flyingVisuals.isGradient,
-          lineCount: flyingVisuals.lineCount,
-          randomLineColor: flyingVisuals.randomLineColor,
-          patternLevel: flyingVisuals.patternLevel,
-          textureKind: flyingVisuals.textureKind,
-          finishKind: flyingVisuals.finishKind,
           startX,
           startY,
           startRotate,
@@ -756,14 +759,14 @@ export default function App() {
       ]);
       setParticles((value) => [...value.slice(-36), ...createParticles(topCard, startX, startY, nextParticleId)]);
       setCombo((value) => (now - previousThrowAt < COMBO_WINDOW_MS ? value + 1 : 1));
-      setThrown((value) => value + 1);
-      setCards((value) => nextStack(value));
+      setThrown(nextThrown);
+      setCards((value) => nextStack(value, nextThrown));
       controls.set({ rotate: 0, scale: 1, opacity: 1 });
       x.set(0);
       y.set(14);
       vibrate();
     },
-    [controls, thrown, topCard, x, y],
+    [controls, topCard, x, y],
   );
 
   const snapBack = useCallback(async () => {
@@ -873,9 +876,12 @@ export default function App() {
   }, [throwFromInput]);
 
   function resetCounter() {
+    thrownRef.current = 0;
     setThrown(0);
     setCombo(0);
     setParticles([]);
+    setFlyingCards([]);
+    setCards(createInitialCards(0));
   }
 
   return (
@@ -922,7 +928,6 @@ export default function App() {
         {cards.map((card, index) => {
           const isTop = index === cards.length - 1;
           const depth = cards.length - 1 - index;
-          const visuals = getVisuals(card, thrown);
 
           return (
             <motion.div
@@ -946,7 +951,7 @@ export default function App() {
                 x: isTop ? x : 0,
                 y: isTop ? y : undefined,
                 rotate: isTop ? rotate : undefined,
-                background: cardBackground(card, visuals.isGradient),
+                background: cardBackground(card, card.isGradient),
                 borderColor: colorToCss(card.color, 12, -18),
                 boxShadow: isTop
                   ? "0 28px 80px rgba(0, 0, 0, 0.24), 0 1px 0 rgba(255, 255, 255, 0.3) inset"
@@ -956,14 +961,14 @@ export default function App() {
               }}
               whileTap={isTop ? { scale: 0.985, cursor: "grabbing" } : undefined}
             >
-              <CardTexture card={card} kind={visuals.textureKind} />
+              <CardTexture card={card} kind={card.textureKind} />
               <CardLines
                 card={card}
-                lineCount={visuals.lineCount}
-                patternLevel={visuals.patternLevel}
-                randomLineColor={visuals.randomLineColor}
+                lineCount={card.lineCount}
+                patternLevel={card.patternLevel}
+                randomLineColor={card.randomLineColor}
               />
-              <CardFinish card={card} kind={visuals.finishKind} />
+              <CardFinish card={card} kind={card.finishKind} />
             </motion.div>
           );
         })}
