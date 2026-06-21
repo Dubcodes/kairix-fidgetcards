@@ -10,7 +10,7 @@ A tiny full-screen fidget app made with Vite, React, TypeScript, and Framer Moti
 - Weak swipes snap the card back to center
 - Pleasant randomized card colors with back-to-back hue separation
 - Gradient cards unlock once the counter reaches 15
-- Random squiggly lines unlock as the counter climbs: 1 at 30, 2 at 50, 3 at 70, 4 at 90, then random 0-5 lines and random gradient mode at 100
+- Black edge-to-edge squiggly lines unlock as the counter climbs: 1 at 30, 2 at 50, 3 at 70, 4 at 90, then random 0-5 colored lines and random gradient mode at 100
 - Small counter, reset icon, and counter show/hide control
 - Keyboard shortcuts: arrow keys or WASD to throw, Space/Enter for a random throw, R to reset, C to toggle controls, F for fullscreen
 - Mobile haptic vibration on successful throws where supported

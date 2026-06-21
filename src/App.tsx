@@ -17,6 +17,7 @@ type FlyingCard = Card & {
   flightId: number;
   isGradient: boolean;
   lineCount: number;
+  randomLineColor: boolean;
   startX: number;
   startY: number;
   startRotate: number;
@@ -139,33 +140,64 @@ function getVisuals(card: Card, count: number) {
   return {
     isGradient: isGradientEnabled(count, card.id),
     lineCount: getLineCount(count, card.id),
+    randomLineColor: count >= RANDOM_STYLE_UNLOCK_COUNT,
   };
+}
+
+function edgePoint(seed: number, preferredEdge?: number) {
+  const edge = preferredEdge ?? seededInteger(seed, 0, 3);
+  const position = seededBetween(seed + 17, 0, 1);
+
+  if (edge === 0) {
+    return { edge, x: position * 100, y: 0 };
+  }
+
+  if (edge === 1) {
+    return { edge, x: 100, y: position * 140 };
+  }
+
+  if (edge === 2) {
+    return { edge, x: position * 100, y: 140 };
+  }
+
+  return { edge, x: 0, y: position * 140 };
 }
 
 function linePath(cardId: number, lineIndex: number) {
   const seed = cardId * 211 + lineIndex * 997;
-  const startX = seededBetween(seed + 1, 6, 22);
-  const endX = seededBetween(seed + 2, 78, 94);
-  const baseY = seededBetween(seed + 3, 24, 118);
-  const c1X = seededBetween(seed + 4, 24, 43);
-  const c2X = seededBetween(seed + 5, 56, 76);
-  const c1Y = baseY + seededBetween(seed + 6, -30, 30);
-  const c2Y = baseY + seededBetween(seed + 7, -30, 30);
-  const endY = baseY + seededBetween(seed + 8, -18, 18);
+  const start = edgePoint(seed + 1);
+  const endEdge = (start.edge + 2 + seededInteger(seed + 2, -1, 1) + 4) % 4;
+  const end = edgePoint(seed + 3, endEdge);
+  const midX = seededBetween(seed + 4, 28, 72);
+  const midY = seededBetween(seed + 5, 34, 106);
+  const c1X = seededBetween(seed + 6, -18, 118);
+  const c1Y = seededBetween(seed + 7, -18, 158);
+  const c2X = seededBetween(seed + 8, -18, 118);
+  const c2Y = seededBetween(seed + 9, -18, 158);
+  const c3X = seededBetween(seed + 10, -18, 118);
+  const c3Y = seededBetween(seed + 11, -18, 158);
+  const c4X = seededBetween(seed + 12, -18, 118);
+  const c4Y = seededBetween(seed + 13, -18, 158);
 
-  return `M ${startX.toFixed(1)} ${baseY.toFixed(1)} C ${c1X.toFixed(1)} ${c1Y.toFixed(1)}, ${c2X.toFixed(
+  return `M ${start.x.toFixed(1)} ${start.y.toFixed(1)} C ${c1X.toFixed(1)} ${c1Y.toFixed(1)}, ${c2X.toFixed(
     1,
-  )} ${c2Y.toFixed(1)}, ${endX.toFixed(1)} ${endY.toFixed(1)}`;
+  )} ${c2Y.toFixed(1)}, ${midX.toFixed(1)} ${midY.toFixed(1)} C ${c3X.toFixed(1)} ${c3Y.toFixed(
+    1,
+  )}, ${c4X.toFixed(1)} ${c4Y.toFixed(1)}, ${end.x.toFixed(1)} ${end.y.toFixed(1)}`;
 }
 
-function lineStroke(color: CardColor, cardId: number, lineIndex: number) {
+function lineStroke(color: CardColor, cardId: number, lineIndex: number, randomLineColor: boolean) {
+  if (!randomLineColor) {
+    return "hsl(0 0% 6% / 0.58)";
+  }
+
   const hue = (color.hue + 130 + lineIndex * 47 + Math.round(seededBetween(cardId + lineIndex, -18, 18))) % 360;
-  const lightness = seededBetween(cardId * 13 + lineIndex, 76, 92);
+  const lightness = seededBetween(cardId * 13 + lineIndex, 42, 88);
 
-  return `hsl(${hue} 88% ${lightness.toFixed(1)}% / 0.78)`;
+  return `hsl(${hue} 88% ${lightness.toFixed(1)}% / 0.82)`;
 }
 
-function CardLines({ card, lineCount }: { card: Card; lineCount: number }) {
+function CardLines({ card, lineCount, randomLineColor }: { card: Card; lineCount: number; randomLineColor: boolean }) {
   if (lineCount <= 0) {
     return null;
   }
@@ -177,9 +209,9 @@ function CardLines({ card, lineCount }: { card: Card; lineCount: number }) {
           key={`${card.id}-${index}`}
           d={linePath(card.id, index)}
           fill="none"
-          stroke={lineStroke(card.color, card.id, index)}
+          stroke={lineStroke(card.color, card.id, index, randomLineColor)}
           strokeLinecap="round"
-          strokeWidth={seededBetween(card.id * 29 + index, 3.2, 5.8).toFixed(1)}
+          strokeWidth={seededBetween(card.id * 29 + index, 3.8, 6.8).toFixed(1)}
         />
       ))}
     </svg>
@@ -292,6 +324,7 @@ export default function App() {
           flightId: nextFlightId,
           isGradient: flyingVisuals.isGradient,
           lineCount: flyingVisuals.lineCount,
+          randomLineColor: flyingVisuals.randomLineColor,
           startX,
           startY,
           startRotate,
@@ -494,7 +527,7 @@ export default function App() {
               }}
               whileTap={isTop ? { scale: 0.985, cursor: "grabbing" } : undefined}
             >
-              <CardLines card={card} lineCount={visuals.lineCount} />
+              <CardLines card={card} lineCount={visuals.lineCount} randomLineColor={visuals.randomLineColor} />
             </motion.div>
           );
         })}
@@ -530,7 +563,7 @@ export default function App() {
               boxShadow: "0 28px 80px rgba(0, 0, 0, 0.24), 0 1px 0 rgba(255, 255, 255, 0.3) inset",
             }}
           >
-            <CardLines card={card} lineCount={card.lineCount} />
+            <CardLines card={card} lineCount={card.lineCount} randomLineColor={card.randomLineColor} />
           </motion.div>
         ))}
       </section>
