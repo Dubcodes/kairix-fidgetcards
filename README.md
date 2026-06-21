@@ -1,0 +1,68 @@
+# Fidget Cards
+
+A tiny full-screen fidget app made with Vite, React, TypeScript, and Framer Motion. Swipe or flick the top card away, then keep going forever.
+
+## Features
+
+- Full-screen responsive card stack for desktop and mobile browsers
+- Touch and mouse drag support
+- Swipe velocity and direction drive the throw animation
+- Weak swipes snap the card back to center
+- Pleasant randomized card colors with back-to-back hue separation
+- Small counter, reset icon, and counter show/hide control
+- Mobile haptic vibration on successful throws where supported
+- Dockerized static build served by Nginx on container port `80`
+
+## Local Development
+
+```bash
+npm install
+npm run dev
+```
+
+Vite will print the local URL. The app can also be previewed after a production build:
+
+```bash
+npm run build
+npm run preview
+```
+
+## Docker
+
+Build and run with Docker Compose:
+
+```bash
+docker compose up -d --build
+```
+
+Open:
+
+```text
+http://localhost:3095
+```
+
+The container serves the app on port `80`, with the compose file mapping host port `3095` to container port `80`.
+
+## Portainer Deployment
+
+1. In Portainer, go to **Stacks**.
+2. Select **Add stack**.
+3. Name the stack `fidget-cards`.
+4. Choose **Repository** if this folder is in a Git repo, or **Web editor** if pasting the compose file manually.
+5. Use this compose content:
+
+```yaml
+services:
+  fidget-cards:
+    build:
+      context: .
+    container_name: fidget-cards
+    ports:
+      - "3095:80"
+    restart: unless-stopped
+```
+
+6. Deploy the stack.
+7. Visit `http://YOUR_SERVER_IP:3095`.
+
+If Portainer is deploying from a Git repository, keep the `Dockerfile`, `nginx.conf`, `package.json`, `src/`, and `index.html` files in the repository root so the build context is correct.
