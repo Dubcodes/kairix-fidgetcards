@@ -76,20 +76,50 @@ function colorToCss(color: CardColor, lightnessOffset = 0, saturationOffset = 0)
   )}%)`;
 }
 
-function cardBackground(color: CardColor, isGradient: boolean) {
+function cardBackground(card: Card, isGradient: boolean) {
+  const color = card.color;
+
   if (!isGradient) {
     return colorToCss(color);
   }
 
-  const accent = { ...color, hue: (color.hue + 64) % 360 };
-  const warm = { ...color, hue: (color.hue + 138) % 360 };
+  const seed = card.id * 409;
+  const variant = seededInteger(seed + 1, 0, 3);
+  const angle = seededBetween(seed + 2, 18, 162).toFixed(1);
+  const glowX = seededBetween(seed + 3, 18, 82).toFixed(1);
+  const glowY = seededBetween(seed + 4, 16, 84).toFixed(1);
+  const secondGlowX = seededBetween(seed + 5, 12, 88).toFixed(1);
+  const secondGlowY = seededBetween(seed + 6, 12, 88).toFixed(1);
+  const accent = { ...color, hue: (color.hue + seededBetween(seed + 7, 42, 96)) % 360 };
+  const warm = { ...color, hue: (color.hue + seededBetween(seed + 8, 118, 172)) % 360 };
+  const cool = { ...color, hue: (color.hue + seededBetween(seed + 9, 196, 248)) % 360 };
 
-  return `radial-gradient(circle at 24% 18%, ${colorToCss(warm, 16, 4)} 0%, transparent 34%),
-    linear-gradient(135deg, ${colorToCss(color, 10, 6)} 0%, ${colorToCss(accent, 4, 10)} 52%, ${colorToCss(
-      color,
-      -8,
-      2,
-    )} 100%)`;
+  if (variant === 0) {
+    return `radial-gradient(circle at ${glowX}% ${glowY}%, ${colorToCss(warm, 16, 4)} 0%, transparent 36%),
+      linear-gradient(${angle}deg, ${colorToCss(color, 10, 6)} 0%, ${colorToCss(accent, 4, 10)} 52%, ${colorToCss(
+        color,
+        -8,
+        2,
+      )} 100%)`;
+  }
+
+  if (variant === 1) {
+    return `radial-gradient(ellipse at ${glowX}% ${glowY}%, ${colorToCss(accent, 18, 6)} 0%, transparent 42%),
+      radial-gradient(circle at ${secondGlowX}% ${secondGlowY}%, ${colorToCss(cool, 12, 2)} 0%, transparent 34%),
+      linear-gradient(${angle}deg, ${colorToCss(color, 8, 6)} 0%, ${colorToCss(warm, -4, 8)} 100%)`;
+  }
+
+  if (variant === 2) {
+    return `linear-gradient(${angle}deg, ${colorToCss(color, 14, 4)} 0%, transparent 58%),
+      radial-gradient(circle at ${secondGlowX}% ${secondGlowY}%, ${colorToCss(warm, 10, 8)} 0%, transparent 38%),
+      linear-gradient(${Number(angle) + 76}deg, ${colorToCss(cool, -2, 10)} 0%, ${colorToCss(accent, 6, 6)} 100%)`;
+  }
+
+  return `conic-gradient(from ${angle}deg at ${glowX}% ${glowY}%, ${colorToCss(color, 8, 8)}, ${colorToCss(
+    accent,
+    2,
+    10,
+  )}, ${colorToCss(warm, 10, 4)}, ${colorToCss(cool, -4, 8)}, ${colorToCss(color, 8, 8)})`;
 }
 
 function seededNumber(seed: number) {
@@ -189,59 +219,64 @@ function edgePoint(seed: number, preferredEdge?: number) {
   return { edge, x: 0, y: position * 140 };
 }
 
+function smoothPoint(start: { x: number; y: number }, end: { x: number; y: number }, t: number, offset: number) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.max(1, Math.hypot(dx, dy));
+  const normalX = -dy / length;
+  const normalY = dx / length;
+
+  return {
+    x: start.x + dx * t + normalX * offset,
+    y: start.y + dy * t + normalY * offset,
+  };
+}
+
 function linePath(cardId: number, lineIndex: number, patternLevel: number) {
   const seed = cardId * 211 + lineIndex * 997;
   const baseEdge = patternLevel >= 4 && lineIndex % 2 === 1 ? 0 : 3;
   const start = edgePoint(seed + 1, baseEdge);
   const endEdge = patternLevel >= 4 && lineIndex % 2 === 1 ? 2 : 1;
   const end = edgePoint(seed + 3, endEdge);
+  const wave = seededBetween(seed + 4, -18, 18);
+  const laneOffset = (lineIndex - 1.5) * (patternLevel >= 3 ? 7 : 9);
 
   if (patternLevel <= 1) {
-    const midX = seededBetween(seed + 4, 40, 60);
-    const midY = seededBetween(seed + 5, 46, 94);
-    const c1X = seededBetween(seed + 6, 24, 42);
-    const c1Y = seededBetween(seed + 7, 18, 122);
-    const c2X = seededBetween(seed + 8, 58, 76);
-    const c2Y = seededBetween(seed + 9, 18, 122);
+    const c1 = smoothPoint(start, end, 0.32, wave);
+    const c2 = smoothPoint(start, end, 0.68, -wave * 0.85);
 
-    return `M ${start.x.toFixed(1)} ${start.y.toFixed(1)} C ${c1X.toFixed(1)} ${c1Y.toFixed(1)}, ${c2X.toFixed(
+    return `M ${start.x.toFixed(1)} ${start.y.toFixed(1)} C ${c1.x.toFixed(1)} ${c1.y.toFixed(1)}, ${c2.x.toFixed(
       1,
-    )} ${c2Y.toFixed(1)}, ${end.x.toFixed(1)} ${end.y.toFixed(1)}`;
+    )} ${c2.y.toFixed(1)}, ${end.x.toFixed(1)} ${end.y.toFixed(1)}`;
   }
 
-  const laneOffset = (lineIndex - 1.5) * (patternLevel >= 3 ? 11 : 15);
-  const midX = seededBetween(seed + 4, 34, 66);
-  const midY = seededBetween(seed + 5, 48, 92) + laneOffset;
-  const c1X = seededBetween(seed + 6, 12, 48);
-  const c1Y = seededBetween(seed + 7, 6, 134) + laneOffset * 0.55;
-  const c2X = seededBetween(seed + 8, 52, 88);
-  const c2Y = seededBetween(seed + 9, 6, 134) + laneOffset * 0.55;
-  const c3X = seededBetween(seed + 10, 8, 92);
-  const c3Y = seededBetween(seed + 11, 4, 136) - laneOffset * 0.45;
-  const c4X = seededBetween(seed + 12, 8, 92);
-  const c4Y = seededBetween(seed + 13, 4, 136) - laneOffset * 0.45;
+  const c1 = smoothPoint(start, end, 0.2, wave + laneOffset);
+  const c2 = smoothPoint(start, end, 0.36, wave * 0.35 + laneOffset);
+  const mid = smoothPoint(start, end, 0.5, -wave * 0.65 + laneOffset);
+  const c3 = smoothPoint(start, end, 0.64, -wave + laneOffset);
+  const c4 = smoothPoint(start, end, 0.82, -wave * 0.4 + laneOffset);
 
-  return `M ${start.x.toFixed(1)} ${start.y.toFixed(1)} C ${c1X.toFixed(1)} ${c1Y.toFixed(1)}, ${c2X.toFixed(
+  return `M ${start.x.toFixed(1)} ${start.y.toFixed(1)} C ${c1.x.toFixed(1)} ${c1.y.toFixed(1)}, ${c2.x.toFixed(
     1,
-  )} ${c2Y.toFixed(1)}, ${midX.toFixed(1)} ${midY.toFixed(1)} C ${c3X.toFixed(1)} ${c3Y.toFixed(
+  )} ${c2.y.toFixed(1)}, ${mid.x.toFixed(1)} ${mid.y.toFixed(1)} C ${c3.x.toFixed(1)} ${c3.y.toFixed(
     1,
-  )}, ${c4X.toFixed(1)} ${c4Y.toFixed(1)}, ${end.x.toFixed(1)} ${end.y.toFixed(1)}`;
+  )}, ${c4.x.toFixed(1)} ${c4.y.toFixed(1)}, ${end.x.toFixed(1)} ${end.y.toFixed(1)}`;
 }
 
 function lineStroke(color: CardColor, cardId: number, lineIndex: number, randomLineColor: boolean) {
   if (!randomLineColor) {
-    return "hsl(0 0% 5% / 0.48)";
+    return "hsl(0 0% 5% / 0.68)";
   }
 
   const hue = (color.hue + 130 + lineIndex * 47 + Math.round(seededBetween(cardId + lineIndex, -18, 18))) % 360;
   const lightness = seededBetween(cardId * 13 + lineIndex, 42, 88);
 
-  return `hsl(${hue} 88% ${lightness.toFixed(1)}% / 0.82)`;
+  return `hsl(${hue} 88% ${lightness.toFixed(1)}% / 0.9)`;
 }
 
 function lineWidth(cardId: number, lineIndex: number, randomLineColor: boolean) {
-  const min = randomLineColor ? 1.5 : 1.4;
-  const max = randomLineColor ? 3.1 : 2.6;
+  const min = randomLineColor ? 1.25 : 1.15;
+  const max = randomLineColor ? 2.25 : 2.05;
 
   return seededBetween(cardId * 29 + lineIndex, min, max).toFixed(1);
 }
@@ -577,7 +612,7 @@ export default function App() {
                 x: isTop ? x : 0,
                 y: isTop ? y : undefined,
                 rotate: isTop ? rotate : undefined,
-                background: cardBackground(card.color, visuals.isGradient),
+                background: cardBackground(card, visuals.isGradient),
                 borderColor: colorToCss(card.color, 12, -18),
                 boxShadow: isTop
                   ? "0 28px 80px rgba(0, 0, 0, 0.24), 0 1px 0 rgba(255, 255, 255, 0.3) inset"
@@ -623,7 +658,7 @@ export default function App() {
               setFlyingCards((value) => value.filter((flyingCard) => flyingCard.flightId !== card.flightId));
             }}
             style={{
-              background: cardBackground(card.color, card.isGradient),
+              background: cardBackground(card, card.isGradient),
               borderColor: colorToCss(card.color, 12, -18),
               boxShadow: "0 28px 80px rgba(0, 0, 0, 0.24), 0 1px 0 rgba(255, 255, 255, 0.3) inset",
             }}
