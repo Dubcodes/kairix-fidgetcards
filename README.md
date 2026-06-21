@@ -11,6 +11,9 @@ A tiny full-screen fidget app made with Vite, React, TypeScript, and Framer Moti
 - Pleasant randomized card colors with back-to-back hue separation
 - Gradient cards unlock once the counter reaches 15
 - Thin black edge-to-edge line patterns unlock as the counter climbs: 1 sweep at 30, paired lines at 50, wave patterns at 70, loose woven lines at 90, then random 0-5 colored pattern lines and random gradient mode at 100
+- Random texture families start appearing after later milestones: dots at 110, waves at 125, grid overlays at 145, stars at 165, checker patterns at 185
+- Rare card finishes start appearing after 130, with gloss and neon effects first and occasional foil cards after 200
+- Fast repeated throws build a small combo badge, and successful throws create subtle color particles
 - Small counter, reset icon, and counter show/hide control
 - Keyboard shortcuts: arrow keys or WASD to throw, Space/Enter for a random throw, R to reset, C to toggle controls, F for fullscreen
 - Mobile haptic vibration on successful throws where supported

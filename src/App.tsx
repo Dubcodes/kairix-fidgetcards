@@ -1,6 +1,6 @@
 import { animate, motion, useAnimationControls, useMotionValue, useTransform, type PanInfo } from "framer-motion";
 import { Eye, EyeOff, Maximize2, Minimize2, RotateCcw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 type CardColor = {
   hue: number;
@@ -13,19 +13,66 @@ type Card = {
   color: CardColor;
 };
 
-type FlyingCard = Card & {
-  flightId: number;
+type TextureKind = "none" | "dots" | "grid" | "waves" | "stars" | "checker";
+type FinishKind = "none" | "gloss" | "neon" | "foil";
+
+type CardVisuals = {
   isGradient: boolean;
   lineCount: number;
   randomLineColor: boolean;
   patternLevel: number;
-  startX: number;
-  startY: number;
-  startRotate: number;
+  textureKind: TextureKind;
+  finishKind: FinishKind;
+};
+
+type FlyingCard = Card &
+  CardVisuals & {
+    flightId: number;
+    startX: number;
+    startY: number;
+    startRotate: number;
+    targetX: number;
+    targetY: number;
+    targetRotate: number;
+    duration: number;
+  };
+
+type Particle = {
+  id: number;
+  x: number;
+  y: number;
   targetX: number;
   targetY: number;
-  targetRotate: number;
+  hue: number;
+  size: number;
   duration: number;
+};
+
+type Point = {
+  x: number;
+  y: number;
+};
+
+type EdgePoint = Point & {
+  edge: number;
+};
+
+type StarPoint = Point & {
+  radius: number;
+  rotate: number;
+};
+
+type TextureShape =
+  | ({ type: "dot" } & Point & { radius: number })
+  | ({ type: "gridLine" } & { x1: number; y1: number; x2: number; y2: number })
+  | ({ type: "wave" } & { d: string })
+  | ({ type: "star" } & StarPoint)
+  | ({ type: "check" } & Point & { width: number; height: number });
+
+type TextureSpec = {
+  shapes: TextureShape[];
+  stroke: string;
+  fill: string;
 };
 
 const CARD_COUNT = 4;
@@ -36,9 +83,17 @@ const TWO_LINE_UNLOCK_COUNT = 50;
 const THREE_LINE_UNLOCK_COUNT = 70;
 const FOUR_LINE_UNLOCK_COUNT = 90;
 const RANDOM_STYLE_UNLOCK_COUNT = 100;
+const DOTS_UNLOCK_COUNT = 110;
+const WAVES_UNLOCK_COUNT = 125;
+const RARE_FINISH_UNLOCK_COUNT = 130;
+const GRID_UNLOCK_COUNT = 145;
+const STARS_UNLOCK_COUNT = 165;
+const CHECKER_UNLOCK_COUNT = 185;
+const FOIL_UNLOCK_COUNT = 200;
 const THROW_VELOCITY = 650;
 const THROW_OFFSET = 130;
 const KEYBOARD_THROW_VELOCITY = 980;
+const COMBO_WINDOW_MS = 850;
 
 function randomBetween(min: number, max: number) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -191,16 +246,78 @@ function isGradientEnabled(count: number, cardId: number) {
   return count >= GRADIENT_UNLOCK_COUNT;
 }
 
-function getVisuals(card: Card, count: number) {
+function getTextureKind(count: number, cardId: number): TextureKind {
+  if (count < DOTS_UNLOCK_COUNT) {
+    return "none";
+  }
+
+  const available: TextureKind[] = ["dots"];
+  let chance = 0.2;
+
+  if (count >= WAVES_UNLOCK_COUNT) {
+    available.push("waves");
+    chance = 0.28;
+  }
+
+  if (count >= GRID_UNLOCK_COUNT) {
+    available.push("grid");
+    chance = 0.34;
+  }
+
+  if (count >= STARS_UNLOCK_COUNT) {
+    available.push("stars");
+    chance = 0.42;
+  }
+
+  if (count >= CHECKER_UNLOCK_COUNT) {
+    available.push("checker");
+    chance = 0.5;
+  }
+
+  if (seededNumber(cardId * 131 + count * 7) > chance) {
+    return "none";
+  }
+
+  return available[seededInteger(cardId * 173 + count, 0, available.length - 1)];
+}
+
+function getFinishKind(count: number, cardId: number): FinishKind {
+  if (count < RARE_FINISH_UNLOCK_COUNT) {
+    return "none";
+  }
+
+  const available: FinishKind[] = ["gloss"];
+  let chance = 0.08;
+
+  if (count >= STARS_UNLOCK_COUNT) {
+    available.push("neon");
+    chance = 0.11;
+  }
+
+  if (count >= FOIL_UNLOCK_COUNT) {
+    available.push("foil");
+    chance = 0.15;
+  }
+
+  if (seededNumber(cardId * 181 + count * 11) > chance) {
+    return "none";
+  }
+
+  return available[seededInteger(cardId * 199 + count, 0, available.length - 1)];
+}
+
+function getVisuals(card: Card, count: number): CardVisuals {
   return {
     isGradient: isGradientEnabled(count, card.id),
     lineCount: getLineCount(count, card.id),
     patternLevel: getPatternLevel(count, card.id),
     randomLineColor: count >= RANDOM_STYLE_UNLOCK_COUNT,
+    textureKind: getTextureKind(count, card.id),
+    finishKind: getFinishKind(count, card.id),
   };
 }
 
-function edgePoint(seed: number, preferredEdge?: number) {
+function edgePoint(seed: number, preferredEdge?: number): EdgePoint {
   const edge = preferredEdge ?? seededInteger(seed, 0, 3);
   const position = seededBetween(seed + 17, 0, 1);
 
@@ -219,7 +336,7 @@ function edgePoint(seed: number, preferredEdge?: number) {
   return { edge, x: 0, y: position * 140 };
 }
 
-function smoothPoint(start: { x: number; y: number }, end: { x: number; y: number }, t: number, offset: number) {
+function smoothPoint(start: Point, end: Point, t: number, offset: number): Point {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
   const length = Math.max(1, Math.hypot(dx, dy));
@@ -281,6 +398,119 @@ function lineWidth(cardId: number, lineIndex: number, randomLineColor: boolean) 
   return seededBetween(cardId * 29 + lineIndex, min, max).toFixed(1);
 }
 
+function texturePaint(color: CardColor, cardId: number) {
+  const brightInk = seededNumber(cardId * 41) > 0.58;
+  const hue = (color.hue + seededBetween(cardId * 47, 120, 230)) % 360;
+
+  if (brightInk) {
+    return {
+      stroke: `hsl(${hue} 84% 94% / 0.34)`,
+      fill: `hsl(${hue} 84% 94% / 0.22)`,
+    };
+  }
+
+  return {
+    stroke: "hsl(0 0% 4% / 0.22)",
+    fill: "hsl(0 0% 4% / 0.14)",
+  };
+}
+
+function wavePath(seed: number, row: number) {
+  const y = 22 + row * 24 + seededBetween(seed + row, -5, 5);
+  const bend = seededBetween(seed + row * 5, -9, 9);
+
+  return `M 0 ${y.toFixed(1)} C 22 ${(y + bend).toFixed(1)}, 28 ${(y - bend).toFixed(1)}, 50 ${y.toFixed(
+    1,
+  )} S 78 ${(y + bend).toFixed(1)}, 100 ${y.toFixed(1)}`;
+}
+
+function starPath(star: StarPoint) {
+  const points = Array.from({ length: 8 }, (_, index) => {
+    const radius = index % 2 === 0 ? star.radius : star.radius * 0.42;
+    const angle = star.rotate + (Math.PI * 2 * index) / 8;
+    return `${(star.x + Math.cos(angle) * radius).toFixed(1)},${(star.y + Math.sin(angle) * radius).toFixed(1)}`;
+  });
+
+  return points.join(" ");
+}
+
+function getTextureSpec(card: Card, kind: TextureKind): TextureSpec | null {
+  if (kind === "none") {
+    return null;
+  }
+
+  const seed = card.id * 307;
+  const paint = texturePaint(card.color, card.id);
+
+  if (kind === "dots") {
+    return {
+      ...paint,
+      shapes: Array.from({ length: 22 }, (_, index) => ({
+        type: "dot",
+        x: seededBetween(seed + index * 3, 7, 93),
+        y: seededBetween(seed + index * 3 + 1, 8, 132),
+        radius: seededBetween(seed + index * 3 + 2, 0.65, 1.8),
+      })),
+    };
+  }
+
+  if (kind === "grid") {
+    const spacing = seededBetween(seed + 1, 13, 18);
+    const vertical = Array.from({ length: 7 }, (_, index) => {
+      const x = index * spacing - 2 + seededBetween(seed + index, -1.4, 1.4);
+      return { type: "gridLine" as const, x1: x, y1: 0, x2: x + seededBetween(seed + index + 20, -7, 7), y2: 140 };
+    });
+    const horizontal = Array.from({ length: 10 }, (_, index) => {
+      const y = index * spacing - 2 + seededBetween(seed + index + 40, -1.4, 1.4);
+      return { type: "gridLine" as const, x1: 0, y1: y, x2: 100, y2: y + seededBetween(seed + index + 60, -6, 6) };
+    });
+
+    return {
+      ...paint,
+      shapes: [...vertical, ...horizontal],
+    };
+  }
+
+  if (kind === "waves") {
+    return {
+      ...paint,
+      shapes: Array.from({ length: 5 }, (_, index) => ({ type: "wave", d: wavePath(seed, index) })),
+    };
+  }
+
+  if (kind === "stars") {
+    return {
+      ...paint,
+      shapes: Array.from({ length: 11 }, (_, index) => ({
+        type: "star",
+        x: seededBetween(seed + index * 4, 9, 91),
+        y: seededBetween(seed + index * 4 + 1, 10, 130),
+        radius: seededBetween(seed + index * 4 + 2, 1.8, 4.2),
+        rotate: seededBetween(seed + index * 4 + 3, 0, Math.PI),
+      })),
+    };
+  }
+
+  const cell = seededInteger(seed + 1, 9, 13);
+  const cols = Math.ceil(100 / cell) + 1;
+  const rows = Math.ceil(140 / cell) + 1;
+
+  return {
+    ...paint,
+    shapes: Array.from({ length: cols * rows }, (_, index) => {
+      const col = index % cols;
+      const row = Math.floor(index / cols);
+      return {
+        type: "check" as const,
+        x: col * cell,
+        y: row * cell,
+        width: cell,
+        height: cell,
+      };
+    }).filter((shape) => (Math.floor(shape.x / cell) + Math.floor(shape.y / cell) + card.id) % 2 === 0),
+  };
+}
+
 function CardLines({
   card,
   lineCount,
@@ -309,6 +539,62 @@ function CardLines({
         />
       ))}
     </svg>
+  );
+}
+
+function CardTexture({ card, kind }: { card: Card; kind: TextureKind }) {
+  const spec = getTextureSpec(card, kind);
+
+  if (!spec) {
+    return null;
+  }
+
+  return (
+    <svg className={`cardTexture texture-${kind}`} viewBox="0 0 100 140" aria-hidden="true" focusable="false">
+      {spec.shapes.map((shape, index) => {
+        if (shape.type === "dot") {
+          return <circle key={index} cx={shape.x} cy={shape.y} r={shape.radius} fill={spec.fill} />;
+        }
+
+        if (shape.type === "gridLine") {
+          return (
+            <line
+              key={index}
+              x1={shape.x1}
+              y1={shape.y1}
+              x2={shape.x2}
+              y2={shape.y2}
+              stroke={spec.stroke}
+              strokeWidth="0.8"
+            />
+          );
+        }
+
+        if (shape.type === "wave") {
+          return <path key={index} d={shape.d} fill="none" stroke={spec.stroke} strokeWidth="1.05" />;
+        }
+
+        if (shape.type === "star") {
+          return <polygon key={index} points={starPath(shape)} fill={spec.fill} stroke={spec.stroke} strokeWidth="0.45" />;
+        }
+
+        return <rect key={index} x={shape.x} y={shape.y} width={shape.width} height={shape.height} fill={spec.fill} />;
+      })}
+    </svg>
+  );
+}
+
+function CardFinish({ card, kind }: { card: Card; kind: FinishKind }) {
+  if (kind === "none") {
+    return null;
+  }
+
+  return (
+    <div
+      className={`cardFinish finish-${kind}`}
+      style={{ "--finish-hue": card.color.hue } as CSSProperties}
+      aria-hidden="true"
+    />
   );
 }
 
@@ -357,13 +643,36 @@ function getExitDistance(unitX: number, unitY: number, startX: number, startY: n
   return Math.min(exitX, exitY);
 }
 
+function createParticles(card: Card, startX: number, startY: number, nextId: number) {
+  return Array.from({ length: 9 }, (_, index): Particle => {
+    const seed = card.id * 389 + index * 29 + nextId;
+    const angle = seededBetween(seed, 0, Math.PI * 2);
+    const distance = seededBetween(seed + 1, 68, 150);
+
+    return {
+      id: nextId + index,
+      x: startX,
+      y: startY,
+      targetX: startX + Math.cos(angle) * distance,
+      targetY: startY + Math.sin(angle) * distance,
+      hue: (card.color.hue + seededBetween(seed + 2, -28, 42) + 360) % 360,
+      size: seededBetween(seed + 3, 4, 9),
+      duration: seededBetween(seed + 4, 0.42, 0.78),
+    };
+  });
+}
+
 export default function App() {
   const [cards, setCards] = useState<Card[]>(createInitialCards);
   const [flyingCards, setFlyingCards] = useState<FlyingCard[]>([]);
+  const [particles, setParticles] = useState<Particle[]>([]);
   const [thrown, setThrown] = useState(0);
+  const [combo, setCombo] = useState(0);
   const [showControls, setShowControls] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const flightId = useRef(0);
+  const particleId = useRef(0);
+  const lastThrowAt = useRef(0);
   const controls = useAnimationControls();
   const x = useMotionValue(0);
   const y = useMotionValue(0);
@@ -396,6 +705,15 @@ export default function App() {
     return () => rise.stop();
   }, [controls, topCard.id, x, y]);
 
+  useEffect(() => {
+    if (combo <= 1) {
+      return undefined;
+    }
+
+    const timeout = window.setTimeout(() => setCombo(0), COMBO_WINDOW_MS + 220);
+    return () => window.clearTimeout(timeout);
+  }, [combo]);
+
   const completeThrow = useCallback(
     (directionX: number, directionY: number, velocity: number, spin: number, startX = 0, startY = 0) => {
       const magnitude = Math.max(1, Math.hypot(directionX, directionY));
@@ -408,8 +726,13 @@ export default function App() {
       const duration = Math.max(1.7, Math.min(2.15, 2.2 - velocity / 11000));
       const startRotate = Math.max(-14, Math.min(14, startX / 26));
       const nextFlightId = flightId.current + 1;
-      const flyingVisuals = getVisuals(topCard, thrown + 1);
+      const flyingVisuals = getVisuals(topCard, thrown);
+      const now = Date.now();
+      const previousThrowAt = lastThrowAt.current;
+      const nextParticleId = particleId.current + 10;
       flightId.current = nextFlightId;
+      particleId.current = nextParticleId;
+      lastThrowAt.current = now;
 
       setFlyingCards((value) => [
         ...value,
@@ -420,6 +743,8 @@ export default function App() {
           lineCount: flyingVisuals.lineCount,
           randomLineColor: flyingVisuals.randomLineColor,
           patternLevel: flyingVisuals.patternLevel,
+          textureKind: flyingVisuals.textureKind,
+          finishKind: flyingVisuals.finishKind,
           startX,
           startY,
           startRotate,
@@ -429,6 +754,8 @@ export default function App() {
           duration,
         },
       ]);
+      setParticles((value) => [...value.slice(-36), ...createParticles(topCard, startX, startY, nextParticleId)]);
+      setCombo((value) => (now - previousThrowAt < COMBO_WINDOW_MS ? value + 1 : 1));
       setThrown((value) => value + 1);
       setCards((value) => nextStack(value));
       controls.set({ rotate: 0, scale: 1, opacity: 1 });
@@ -547,6 +874,8 @@ export default function App() {
 
   function resetCounter() {
     setThrown(0);
+    setCombo(0);
+    setParticles([]);
   }
 
   return (
@@ -564,6 +893,11 @@ export default function App() {
         {showControls ? (
           <div className="counter" aria-live="polite">
             <span>{thrown}</span>
+          </div>
+        ) : null}
+        {showControls && combo >= 3 ? (
+          <div className="combo" aria-live="polite">
+            <span>x{combo}</span>
           </div>
         ) : null}
         {showControls ? (
@@ -622,12 +956,14 @@ export default function App() {
               }}
               whileTap={isTop ? { scale: 0.985, cursor: "grabbing" } : undefined}
             >
+              <CardTexture card={card} kind={visuals.textureKind} />
               <CardLines
                 card={card}
                 lineCount={visuals.lineCount}
                 patternLevel={visuals.patternLevel}
                 randomLineColor={visuals.randomLineColor}
               />
+              <CardFinish card={card} kind={visuals.finishKind} />
             </motion.div>
           );
         })}
@@ -663,13 +999,34 @@ export default function App() {
               boxShadow: "0 28px 80px rgba(0, 0, 0, 0.24), 0 1px 0 rgba(255, 255, 255, 0.3) inset",
             }}
           >
+            <CardTexture card={card} kind={card.textureKind} />
             <CardLines
               card={card}
               lineCount={card.lineCount}
               patternLevel={card.patternLevel}
               randomLineColor={card.randomLineColor}
             />
+            <CardFinish card={card} kind={card.finishKind} />
           </motion.div>
+        ))}
+
+        {particles.map((particle) => (
+          <motion.span
+            key={particle.id}
+            className="particle"
+            initial={{ x: particle.x, y: particle.y, scale: 0.4, opacity: 0.95 }}
+            animate={{ x: particle.targetX, y: particle.targetY, scale: 1, opacity: 0 }}
+            transition={{ duration: particle.duration, ease: "easeOut" }}
+            onAnimationComplete={() => {
+              setParticles((value) => value.filter((current) => current.id !== particle.id));
+            }}
+            style={{
+              width: particle.size,
+              height: particle.size,
+              color: `hsl(${particle.hue} 92% 72%)`,
+              backgroundColor: `hsl(${particle.hue} 92% 72%)`,
+            }}
+          />
         ))}
       </section>
     </main>
