@@ -15,6 +15,7 @@ type Card = {
 
 type FlyingCard = Card & {
   flightId: number;
+  isGradient: boolean;
   startX: number;
   startY: number;
   startRotate: number;
@@ -26,6 +27,7 @@ type FlyingCard = Card & {
 
 const CARD_COUNT = 4;
 const MIN_HUE_DISTANCE = 36;
+const GRADIENT_UNLOCK_COUNT = 15;
 const THROW_VELOCITY = 650;
 const THROW_OFFSET = 130;
 const KEYBOARD_THROW_VELOCITY = 980;
@@ -64,6 +66,22 @@ function colorToCss(color: CardColor, lightnessOffset = 0, saturationOffset = 0)
     0,
     Math.min(100, color.lightness + lightnessOffset),
   )}%)`;
+}
+
+function cardBackground(color: CardColor, isGradient: boolean) {
+  if (!isGradient) {
+    return colorToCss(color);
+  }
+
+  const accent = { ...color, hue: (color.hue + 64) % 360 };
+  const warm = { ...color, hue: (color.hue + 138) % 360 };
+
+  return `radial-gradient(circle at 24% 18%, ${colorToCss(warm, 16, 4)} 0%, transparent 34%),
+    linear-gradient(135deg, ${colorToCss(color, 10, 6)} 0%, ${colorToCss(accent, 4, 10)} 52%, ${colorToCss(
+      color,
+      -8,
+      2,
+    )} 100%)`;
 }
 
 function createInitialCards() {
@@ -123,6 +141,7 @@ export default function App() {
   const y = useMotionValue(0);
   const rotate = useTransform(x, [-320, 320], [-12, 12]);
   const topCard = cards[cards.length - 1];
+  const gradientsUnlocked = thrown >= GRADIENT_UNLOCK_COUNT;
 
   const theme = useMemo(
     () => ({
@@ -162,6 +181,7 @@ export default function App() {
       const duration = Math.max(1.7, Math.min(2.15, 2.2 - velocity / 11000));
       const startRotate = Math.max(-14, Math.min(14, startX / 26));
       const nextFlightId = flightId.current + 1;
+      const isGradient = thrown + 1 >= GRADIENT_UNLOCK_COUNT;
       flightId.current = nextFlightId;
 
       setFlyingCards((value) => [
@@ -169,6 +189,7 @@ export default function App() {
         {
           ...topCard,
           flightId: nextFlightId,
+          isGradient,
           startX,
           startY,
           startRotate,
@@ -185,7 +206,7 @@ export default function App() {
       y.set(14);
       vibrate();
     },
-    [controls, topCard, x, y],
+    [controls, thrown, topCard, x, y],
   );
 
   const snapBack = useCallback(async () => {
@@ -360,7 +381,7 @@ export default function App() {
                 x: isTop ? x : 0,
                 y: isTop ? y : undefined,
                 rotate: isTop ? rotate : undefined,
-                backgroundColor: colorToCss(card.color),
+                background: cardBackground(card.color, gradientsUnlocked),
                 borderColor: colorToCss(card.color, 12, -18),
                 boxShadow: isTop
                   ? "0 28px 80px rgba(0, 0, 0, 0.24), 0 1px 0 rgba(255, 255, 255, 0.3) inset"
@@ -399,7 +420,7 @@ export default function App() {
               setFlyingCards((value) => value.filter((flyingCard) => flyingCard.flightId !== card.flightId));
             }}
             style={{
-              backgroundColor: colorToCss(card.color),
+              background: cardBackground(card.color, card.isGradient),
               borderColor: colorToCss(card.color, 12, -18),
               boxShadow: "0 28px 80px rgba(0, 0, 0, 0.24), 0 1px 0 rgba(255, 255, 255, 0.3) inset",
             }}

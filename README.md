@@ -9,6 +9,7 @@ A tiny full-screen fidget app made with Vite, React, TypeScript, and Framer Moti
 - Swipe velocity and direction drive the throw animation
 - Weak swipes snap the card back to center
 - Pleasant randomized card colors with back-to-back hue separation
+- Gradient cards unlock once the counter reaches 15
 - Small counter, reset icon, and counter show/hide control
 - Keyboard shortcuts: arrow keys or WASD to throw, Space/Enter for a random throw, R to reset, C to toggle controls, F for fullscreen
 - Mobile haptic vibration on successful throws where supported
