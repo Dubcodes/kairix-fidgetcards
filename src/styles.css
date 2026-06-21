@@ -36,6 +36,11 @@ button {
   transition: background 260ms ease;
 }
 
+.app:fullscreen {
+  width: 100vw;
+  height: 100vh;
+}
+
 .topBar {
   position: fixed;
   top: max(14px, env(safe-area-inset-top));

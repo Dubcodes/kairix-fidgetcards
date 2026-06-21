@@ -1,6 +1,6 @@
 import { motion, useAnimationControls, useMotionValue, useTransform, type PanInfo } from "framer-motion";
-import { Eye, EyeOff, RotateCcw } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Eye, EyeOff, Maximize2, Minimize2, RotateCcw } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 type CardColor = {
   hue: number;
@@ -18,6 +18,7 @@ const MIN_HUE_DISTANCE = 36;
 const THROW_DISTANCE = 1600;
 const THROW_VELOCITY = 650;
 const THROW_OFFSET = 130;
+const KEYBOARD_THROW_VELOCITY = 980;
 
 function randomBetween(min: number, max: number) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -88,6 +89,7 @@ export default function App() {
   const [thrown, setThrown] = useState(0);
   const [showCounter, setShowCounter] = useState(true);
   const [isThrowing, setIsThrowing] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const controls = useAnimationControls();
   const x = useMotionValue(0);
   const y = useMotionValue(0);
@@ -96,64 +98,163 @@ export default function App() {
 
   const theme = useMemo(
     () => ({
-      background: `radial-gradient(circle at 20% 10%, ${colorToCss(topCard.color, 20, -8)}, transparent 28%),
-        linear-gradient(135deg, ${colorToCss(topCard.color, 28, -18)} 0%, ${colorToCss(topCard.color, -8, -5)} 100%)`,
+      background: `radial-gradient(circle at 20% 10%, ${colorToCss(topCard.color, 24, -38)}, transparent 30%),
+        linear-gradient(135deg, ${colorToCss(topCard.color, 32, -44)} 0%, ${colorToCss(
+          { ...topCard.color, hue: (topCard.color.hue + 34) % 360 },
+          22,
+          -36,
+        )} 100%)`,
     }),
     [topCard.color],
   );
 
   useEffect(() => {
-    controls.set({ x: 0, y: 0, rotate: 0, scale: 1 });
+    controls.set({ x: 0, y: 0, rotate: 0, scale: 1, opacity: 1 });
     x.set(0);
     y.set(0);
   }, [controls, topCard.id, x, y]);
 
-  async function throwCard(info: PanInfo) {
-    const velocity = Math.hypot(info.velocity.x, info.velocity.y);
-    const distance = Math.hypot(info.offset.x, info.offset.y);
-    const shouldThrow = velocity > THROW_VELOCITY || distance > THROW_OFFSET;
+  const completeThrow = useCallback(
+    async (directionX: number, directionY: number, velocity: number, spin: number) => {
+      if (isThrowing) {
+        return;
+      }
 
-    if (!shouldThrow) {
-      await controls.start({
-        x: 0,
-        y: 0,
-        rotate: 0,
-        transition: { type: "spring", stiffness: 420, damping: 30 },
-      });
+      const magnitude = Math.max(1, Math.hypot(directionX, directionY));
+      const speedBoost = Math.min(1.8, Math.max(0.9, velocity / 1050));
+      const targetX = (directionX / magnitude) * THROW_DISTANCE * speedBoost;
+      const targetY = (directionY / magnitude) * THROW_DISTANCE * speedBoost;
+      const duration = Math.max(0.2, Math.min(0.42, 0.52 - velocity / 3600));
+
+      setIsThrowing(true);
+      vibrate();
+
+      try {
+        await controls.start({
+          x: targetX,
+          y: targetY,
+          rotate: spin,
+          opacity: 0.98,
+          transition: {
+            duration,
+            ease: [0.16, 0.78, 0.22, 1],
+          },
+        });
+
+        setThrown((value) => value + 1);
+        setCards((value) => nextStack(value));
+      } finally {
+        setIsThrowing(false);
+      }
+    },
+    [controls, isThrowing],
+  );
+
+  const snapBack = useCallback(async () => {
+    await controls.start({
+      x: 0,
+      y: 0,
+      rotate: 0,
+      opacity: 1,
+      transition: { type: "spring", stiffness: 420, damping: 30 },
+    });
+  }, [controls]);
+
+  const throwFromInput = useCallback(
+    async (velocityX: number, velocityY: number, offsetX = 0, offsetY = 0) => {
+      const velocity = Math.hypot(velocityX, velocityY);
+      const distance = Math.hypot(offsetX, offsetY);
+      const shouldThrow = velocity > THROW_VELOCITY || distance > THROW_OFFSET;
+
+      if (!shouldThrow) {
+        await snapBack();
+        return;
+      }
+
+      const directionX = velocityX || offsetX || (Math.random() > 0.5 ? 1 : -1);
+      const directionY = velocityY || offsetY || -1;
+      const spin = Math.max(-34, Math.min(34, offsetX / 5 + velocityX / 90));
+
+      await completeThrow(directionX, directionY, velocity || KEYBOARD_THROW_VELOCITY, spin);
+    },
+    [completeThrow, snapBack],
+  );
+
+  function throwCard(info: PanInfo) {
+    void throwFromInput(info.velocity.x, info.velocity.y, info.offset.x, info.offset.y);
+  }
+
+  async function toggleFullscreen() {
+    if (!document.fullscreenElement) {
+      await document.documentElement.requestFullscreen?.();
       return;
     }
 
-    const directionX = info.velocity.x || info.offset.x || (Math.random() > 0.5 ? 1 : -1);
-    const directionY = info.velocity.y || info.offset.y || -1;
-    const magnitude = Math.max(1, Math.hypot(directionX, directionY));
-    const speedBoost = Math.min(1.7, Math.max(0.85, velocity / 1100));
-    const targetX = (directionX / magnitude) * THROW_DISTANCE * speedBoost;
-    const targetY = (directionY / magnitude) * THROW_DISTANCE * speedBoost;
-    const spin = Math.max(-38, Math.min(38, info.offset.x / 5 + info.velocity.x / 85));
-
-    setIsThrowing(true);
-    vibrate();
-
-    await controls.start({
-      x: targetX,
-      y: targetY,
-      rotate: spin,
-      scale: 0.98,
-      transition: {
-        type: "inertia",
-        velocity,
-        power: 0.75,
-        timeConstant: 280,
-        bounceStiffness: 0,
-        bounceDamping: 0,
-        duration: 0.42,
-      },
-    });
-
-    setThrown((value) => value + 1);
-    setCards((value) => nextStack(value));
-    setIsThrowing(false);
+    await document.exitFullscreen?.();
   }
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.repeat || isThrowing) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      const throws: Record<string, [number, number]> = {
+        arrowleft: [-KEYBOARD_THROW_VELOCITY, 0],
+        a: [-KEYBOARD_THROW_VELOCITY, 0],
+        arrowright: [KEYBOARD_THROW_VELOCITY, 0],
+        d: [KEYBOARD_THROW_VELOCITY, 0],
+        arrowup: [0, -KEYBOARD_THROW_VELOCITY],
+        w: [0, -KEYBOARD_THROW_VELOCITY],
+        arrowdown: [0, KEYBOARD_THROW_VELOCITY],
+        s: [0, KEYBOARD_THROW_VELOCITY],
+      };
+
+      if (key in throws) {
+        event.preventDefault();
+        const [velocityX, velocityY] = throws[key];
+        void throwFromInput(velocityX, velocityY, velocityX / 5, velocityY / 5);
+        return;
+      }
+
+      if (key === " " || key === "enter") {
+        event.preventDefault();
+        const direction = Math.random() * Math.PI * 2;
+        void throwFromInput(Math.cos(direction) * KEYBOARD_THROW_VELOCITY, Math.sin(direction) * KEYBOARD_THROW_VELOCITY);
+        return;
+      }
+
+      if (key === "r") {
+        event.preventDefault();
+        resetCounter();
+        return;
+      }
+
+      if (key === "c") {
+        event.preventDefault();
+        setShowCounter((value) => !value);
+        return;
+      }
+
+      if (key === "f") {
+        event.preventDefault();
+        void toggleFullscreen();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isThrowing, throwFromInput]);
 
   function resetCounter() {
     setThrown(0);
@@ -179,6 +280,15 @@ export default function App() {
         <button className="iconButton reset" type="button" onClick={resetCounter} aria-label="Reset counter" title="Reset counter">
           <RotateCcw size={17} strokeWidth={2.4} />
         </button>
+        <button
+          className="iconButton"
+          type="button"
+          onClick={() => void toggleFullscreen()}
+          aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+          title={isFullscreen ? "Exit fullscreen (F)" : "Enter fullscreen (F)"}
+        >
+          {isFullscreen ? <Minimize2 size={17} strokeWidth={2.4} /> : <Maximize2 size={17} strokeWidth={2.4} />}
+        </button>
       </div>
 
       <section className="stage" aria-label="Swipe cards">
@@ -193,7 +303,7 @@ export default function App() {
               drag={isTop && !isThrowing}
               dragMomentum={false}
               dragElastic={0.12}
-              onDragEnd={(_, info) => void throwCard(info)}
+              onDragEnd={(_, info) => throwCard(info)}
               animate={isTop ? controls : undefined}
               style={{
                 x: isTop ? x : 0,
