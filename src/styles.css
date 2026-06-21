@@ -111,6 +111,11 @@ button {
   will-change: transform;
 }
 
+.flyingCard {
+  z-index: 30;
+  pointer-events: none;
+}
+
 @media (max-width: 680px) {
   .topBar {
     top: max(10px, env(safe-area-inset-top));

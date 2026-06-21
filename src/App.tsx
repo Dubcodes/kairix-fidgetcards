@@ -1,6 +1,6 @@
 import { motion, useAnimationControls, useMotionValue, useTransform, type PanInfo } from "framer-motion";
 import { Eye, EyeOff, Maximize2, Minimize2, RotateCcw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type CardColor = {
   hue: number;
@@ -11,6 +11,17 @@ type CardColor = {
 type Card = {
   id: number;
   color: CardColor;
+};
+
+type FlyingCard = Card & {
+  flightId: number;
+  startX: number;
+  startY: number;
+  startRotate: number;
+  targetX: number;
+  targetY: number;
+  targetRotate: number;
+  duration: number;
 };
 
 const CARD_COUNT = 4;
@@ -68,13 +79,15 @@ function createInitialCards() {
 }
 
 function nextStack(cards: Card[]) {
-  const topColor = cards[cards.length - 1]?.color;
+  const bottomColor = cards[0]?.color;
+  const nextId = Math.max(...cards.map((card) => card.id)) + 1;
+
   return [
-    ...cards.slice(0, -1),
     {
-      id: cards[cards.length - 1].id + 1,
-      color: createColor(topColor),
+      id: nextId,
+      color: createColor(bottomColor),
     },
+    ...cards.slice(0, -1),
   ];
 }
 
@@ -86,10 +99,11 @@ function vibrate() {
 
 export default function App() {
   const [cards, setCards] = useState<Card[]>(createInitialCards);
+  const [flyingCards, setFlyingCards] = useState<FlyingCard[]>([]);
   const [thrown, setThrown] = useState(0);
   const [showCounter, setShowCounter] = useState(true);
-  const [isThrowing, setIsThrowing] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const flightId = useRef(0);
   const controls = useAnimationControls();
   const x = useMotionValue(0);
   const y = useMotionValue(0);
@@ -115,39 +129,38 @@ export default function App() {
   }, [controls, topCard.id, x, y]);
 
   const completeThrow = useCallback(
-    async (directionX: number, directionY: number, velocity: number, spin: number) => {
-      if (isThrowing) {
-        return;
-      }
-
+    (directionX: number, directionY: number, velocity: number, spin: number, startX = 0, startY = 0) => {
       const magnitude = Math.max(1, Math.hypot(directionX, directionY));
-      const speedBoost = Math.min(1.8, Math.max(0.9, velocity / 1050));
+      const speedBoost = Math.min(2.9, Math.max(0.9, velocity / 850));
       const targetX = (directionX / magnitude) * THROW_DISTANCE * speedBoost;
       const targetY = (directionY / magnitude) * THROW_DISTANCE * speedBoost;
-      const duration = Math.max(0.2, Math.min(0.42, 0.52 - velocity / 3600));
+      const duration = Math.max(0.12, Math.min(0.34, 0.42 - velocity / 4200));
+      const startRotate = Math.max(-14, Math.min(14, startX / 26));
+      const nextFlightId = flightId.current + 1;
+      flightId.current = nextFlightId;
 
-      setIsThrowing(true);
+      setFlyingCards((value) => [
+        ...value,
+        {
+          ...topCard,
+          flightId: nextFlightId,
+          startX,
+          startY,
+          startRotate,
+          targetX,
+          targetY,
+          targetRotate: spin,
+          duration,
+        },
+      ]);
+      setThrown((value) => value + 1);
+      setCards((value) => nextStack(value));
+      controls.set({ x: 0, y: 0, rotate: 0, scale: 1, opacity: 1 });
+      x.set(0);
+      y.set(0);
       vibrate();
-
-      try {
-        await controls.start({
-          x: targetX,
-          y: targetY,
-          rotate: spin,
-          opacity: 0.98,
-          transition: {
-            duration,
-            ease: [0.16, 0.78, 0.22, 1],
-          },
-        });
-
-        setThrown((value) => value + 1);
-        setCards((value) => nextStack(value));
-      } finally {
-        setIsThrowing(false);
-      }
     },
-    [controls, isThrowing],
+    [controls, topCard, x, y],
   );
 
   const snapBack = useCallback(async () => {
@@ -175,7 +188,7 @@ export default function App() {
       const directionY = velocityY || offsetY || -1;
       const spin = Math.max(-34, Math.min(34, offsetX / 5 + velocityX / 90));
 
-      await completeThrow(directionX, directionY, velocity || KEYBOARD_THROW_VELOCITY, spin);
+      completeThrow(directionX, directionY, velocity || KEYBOARD_THROW_VELOCITY, spin, offsetX, offsetY);
     },
     [completeThrow, snapBack],
   );
@@ -204,7 +217,7 @@ export default function App() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.repeat || isThrowing) {
+      if (event.repeat) {
         return;
       }
 
@@ -254,7 +267,7 @@ export default function App() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isThrowing, throwFromInput]);
+  }, [throwFromInput]);
 
   function resetCounter() {
     setThrown(0);
@@ -300,7 +313,7 @@ export default function App() {
             <motion.div
               key={card.id}
               className="card"
-              drag={isTop && !isThrowing}
+              drag={isTop}
               dragMomentum={false}
               dragElastic={0.12}
               onDragEnd={(_, info) => throwCard(info)}
@@ -321,6 +334,39 @@ export default function App() {
             />
           );
         })}
+
+        {flyingCards.map((card) => (
+          <motion.div
+            key={card.flightId}
+            className="card flyingCard"
+            initial={{
+              x: card.startX,
+              y: card.startY,
+              rotate: card.startRotate,
+              scale: 1,
+              opacity: 1,
+            }}
+            animate={{
+              x: card.targetX,
+              y: card.targetY,
+              rotate: card.targetRotate,
+              scale: 0.98,
+              opacity: 0.98,
+            }}
+            transition={{
+              duration: card.duration,
+              ease: [0.16, 0.78, 0.22, 1],
+            }}
+            onAnimationComplete={() => {
+              setFlyingCards((value) => value.filter((flyingCard) => flyingCard.flightId !== card.flightId));
+            }}
+            style={{
+              backgroundColor: colorToCss(card.color),
+              borderColor: colorToCss(card.color, 12, -18),
+              boxShadow: "0 28px 80px rgba(0, 0, 0, 0.24), 0 1px 0 rgba(255, 255, 255, 0.3) inset",
+            }}
+          />
+        ))}
       </section>
     </main>
   );
