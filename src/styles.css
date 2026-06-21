@@ -109,11 +109,21 @@ button {
   cursor: grab;
   pointer-events: auto;
   will-change: transform;
+  overflow: hidden;
 }
 
 .flyingCard {
   z-index: 30;
   pointer-events: none;
+}
+
+.cardLines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  mix-blend-mode: screen;
 }
 
 @media (max-width: 680px) {

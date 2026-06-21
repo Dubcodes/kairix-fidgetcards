@@ -16,6 +16,7 @@ type Card = {
 type FlyingCard = Card & {
   flightId: number;
   isGradient: boolean;
+  lineCount: number;
   startX: number;
   startY: number;
   startRotate: number;
@@ -28,6 +29,11 @@ type FlyingCard = Card & {
 const CARD_COUNT = 4;
 const MIN_HUE_DISTANCE = 36;
 const GRADIENT_UNLOCK_COUNT = 15;
+const ONE_LINE_UNLOCK_COUNT = 30;
+const TWO_LINE_UNLOCK_COUNT = 50;
+const THREE_LINE_UNLOCK_COUNT = 70;
+const FOUR_LINE_UNLOCK_COUNT = 90;
+const RANDOM_STYLE_UNLOCK_COUNT = 100;
 const THROW_VELOCITY = 650;
 const THROW_OFFSET = 130;
 const KEYBOARD_THROW_VELOCITY = 980;
@@ -82,6 +88,102 @@ function cardBackground(color: CardColor, isGradient: boolean) {
       -8,
       2,
     )} 100%)`;
+}
+
+function seededNumber(seed: number) {
+  const value = Math.sin(seed * 9301 + 49297) * 233280;
+  return value - Math.floor(value);
+}
+
+function seededBetween(seed: number, min: number, max: number) {
+  return min + seededNumber(seed) * (max - min);
+}
+
+function seededInteger(seed: number, min: number, max: number) {
+  return Math.floor(seededBetween(seed, min, max + 1));
+}
+
+function getLineCount(count: number, cardId: number) {
+  if (count >= RANDOM_STYLE_UNLOCK_COUNT) {
+    return seededInteger(cardId * 71 + 19, 0, 5);
+  }
+
+  if (count >= FOUR_LINE_UNLOCK_COUNT) {
+    return 4;
+  }
+
+  if (count >= THREE_LINE_UNLOCK_COUNT) {
+    return 3;
+  }
+
+  if (count >= TWO_LINE_UNLOCK_COUNT) {
+    return 2;
+  }
+
+  if (count >= ONE_LINE_UNLOCK_COUNT) {
+    return 1;
+  }
+
+  return 0;
+}
+
+function isGradientEnabled(count: number, cardId: number) {
+  if (count >= RANDOM_STYLE_UNLOCK_COUNT) {
+    return seededNumber(cardId * 53 + 31) > 0.5;
+  }
+
+  return count >= GRADIENT_UNLOCK_COUNT;
+}
+
+function getVisuals(card: Card, count: number) {
+  return {
+    isGradient: isGradientEnabled(count, card.id),
+    lineCount: getLineCount(count, card.id),
+  };
+}
+
+function linePath(cardId: number, lineIndex: number) {
+  const seed = cardId * 211 + lineIndex * 997;
+  const startX = seededBetween(seed + 1, 6, 22);
+  const endX = seededBetween(seed + 2, 78, 94);
+  const baseY = seededBetween(seed + 3, 24, 118);
+  const c1X = seededBetween(seed + 4, 24, 43);
+  const c2X = seededBetween(seed + 5, 56, 76);
+  const c1Y = baseY + seededBetween(seed + 6, -30, 30);
+  const c2Y = baseY + seededBetween(seed + 7, -30, 30);
+  const endY = baseY + seededBetween(seed + 8, -18, 18);
+
+  return `M ${startX.toFixed(1)} ${baseY.toFixed(1)} C ${c1X.toFixed(1)} ${c1Y.toFixed(1)}, ${c2X.toFixed(
+    1,
+  )} ${c2Y.toFixed(1)}, ${endX.toFixed(1)} ${endY.toFixed(1)}`;
+}
+
+function lineStroke(color: CardColor, cardId: number, lineIndex: number) {
+  const hue = (color.hue + 130 + lineIndex * 47 + Math.round(seededBetween(cardId + lineIndex, -18, 18))) % 360;
+  const lightness = seededBetween(cardId * 13 + lineIndex, 76, 92);
+
+  return `hsl(${hue} 88% ${lightness.toFixed(1)}% / 0.78)`;
+}
+
+function CardLines({ card, lineCount }: { card: Card; lineCount: number }) {
+  if (lineCount <= 0) {
+    return null;
+  }
+
+  return (
+    <svg className="cardLines" viewBox="0 0 100 140" aria-hidden="true" focusable="false">
+      {Array.from({ length: lineCount }, (_, index) => (
+        <path
+          key={`${card.id}-${index}`}
+          d={linePath(card.id, index)}
+          fill="none"
+          stroke={lineStroke(card.color, card.id, index)}
+          strokeLinecap="round"
+          strokeWidth={seededBetween(card.id * 29 + index, 3.2, 5.8).toFixed(1)}
+        />
+      ))}
+    </svg>
+  );
 }
 
 function createInitialCards() {
@@ -141,7 +243,6 @@ export default function App() {
   const y = useMotionValue(0);
   const rotate = useTransform(x, [-320, 320], [-12, 12]);
   const topCard = cards[cards.length - 1];
-  const gradientsUnlocked = thrown >= GRADIENT_UNLOCK_COUNT;
 
   const theme = useMemo(
     () => ({
@@ -181,7 +282,7 @@ export default function App() {
       const duration = Math.max(1.7, Math.min(2.15, 2.2 - velocity / 11000));
       const startRotate = Math.max(-14, Math.min(14, startX / 26));
       const nextFlightId = flightId.current + 1;
-      const isGradient = thrown + 1 >= GRADIENT_UNLOCK_COUNT;
+      const flyingVisuals = getVisuals(topCard, thrown + 1);
       flightId.current = nextFlightId;
 
       setFlyingCards((value) => [
@@ -189,7 +290,8 @@ export default function App() {
         {
           ...topCard,
           flightId: nextFlightId,
-          isGradient,
+          isGradient: flyingVisuals.isGradient,
+          lineCount: flyingVisuals.lineCount,
           startX,
           startY,
           startRotate,
@@ -358,6 +460,7 @@ export default function App() {
         {cards.map((card, index) => {
           const isTop = index === cards.length - 1;
           const depth = cards.length - 1 - index;
+          const visuals = getVisuals(card, thrown);
 
           return (
             <motion.div
@@ -381,7 +484,7 @@ export default function App() {
                 x: isTop ? x : 0,
                 y: isTop ? y : undefined,
                 rotate: isTop ? rotate : undefined,
-                background: cardBackground(card.color, gradientsUnlocked),
+                background: cardBackground(card.color, visuals.isGradient),
                 borderColor: colorToCss(card.color, 12, -18),
                 boxShadow: isTop
                   ? "0 28px 80px rgba(0, 0, 0, 0.24), 0 1px 0 rgba(255, 255, 255, 0.3) inset"
@@ -390,7 +493,9 @@ export default function App() {
                 scale: isTop ? 1 : undefined,
               }}
               whileTap={isTop ? { scale: 0.985, cursor: "grabbing" } : undefined}
-            />
+            >
+              <CardLines card={card} lineCount={visuals.lineCount} />
+            </motion.div>
           );
         })}
 
@@ -424,7 +529,9 @@ export default function App() {
               borderColor: colorToCss(card.color, 12, -18),
               boxShadow: "0 28px 80px rgba(0, 0, 0, 0.24), 0 1px 0 rgba(255, 255, 255, 0.3) inset",
             }}
-          />
+          >
+            <CardLines card={card} lineCount={card.lineCount} />
+          </motion.div>
         ))}
       </section>
     </main>
