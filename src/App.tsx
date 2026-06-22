@@ -1,6 +1,7 @@
 import { animate, motion, useAnimationControls, useMotionValue, useTransform, type PanInfo } from "framer-motion";
 import { Eye, EyeOff, Maximize2, Minimize2, RotateCcw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { flushSync } from "react-dom";
 
 type CardColor = {
   hue: number;
@@ -23,6 +24,7 @@ type CardVisuals = {
   patternLevel: number;
   textureKind: TextureKind;
   finishKind: FinishKind;
+  emojiMark: EmojiMark | null;
 };
 
 type StackCard = Card & CardVisuals;
@@ -36,6 +38,13 @@ type FlyingCard = StackCard & {
   targetY: number;
   targetRotate: number;
   duration: number;
+};
+
+type EmojiMark = Point & {
+  emoji: string;
+  size: number;
+  rotate: number;
+  opacity: number;
 };
 
 type Particle = {
@@ -91,10 +100,32 @@ const GRID_UNLOCK_COUNT = 145;
 const STARS_UNLOCK_COUNT = 165;
 const CHECKER_UNLOCK_COUNT = 185;
 const FOIL_UNLOCK_COUNT = 200;
+const EMOJI_UNLOCK_COUNT = 200;
+const EMOJI_UNLOCK_STEP = 100;
 const THROW_VELOCITY = 650;
 const THROW_OFFSET = 130;
 const KEYBOARD_THROW_VELOCITY = 980;
 const COMBO_WINDOW_MS = 850;
+const MIN_FLIGHT_DURATION = 0.44;
+const MAX_FLIGHT_DURATION = 1.28;
+const EMOJI_POOL = [
+  "✨",
+  "🌈",
+  "⭐",
+  "💫",
+  "🔥",
+  "💎",
+  "🍀",
+  "⚡",
+  "🎲",
+  "🎯",
+  "🚀",
+  "🎨",
+  "🌀",
+  "🧩",
+  "🌟",
+  "💥",
+];
 
 function randomBetween(min: number, max: number) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -189,6 +220,10 @@ function seededBetween(seed: number, min: number, max: number) {
 
 function seededInteger(seed: number, min: number, max: number) {
   return Math.floor(seededBetween(seed, min, max + 1));
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
 }
 
 function getLineCount(count: number, cardId: number) {
@@ -307,6 +342,57 @@ function getFinishKind(count: number, cardId: number): FinishKind {
   return available[seededInteger(cardId * 199 + count, 0, available.length - 1)];
 }
 
+function getUnlockedEmojis(count: number) {
+  if (count < EMOJI_UNLOCK_COUNT) {
+    return [];
+  }
+
+  const unlockCount = Math.min(EMOJI_POOL.length, Math.floor((count - EMOJI_UNLOCK_COUNT) / EMOJI_UNLOCK_STEP) + 1);
+  const emojis: string[] = [];
+
+  for (let index = 0; index < unlockCount; index += 1) {
+    const candidate = EMOJI_POOL[seededInteger(EMOJI_UNLOCK_COUNT + index * 619, 0, EMOJI_POOL.length - 1)];
+
+    if (!emojis.includes(candidate)) {
+      emojis.push(candidate);
+    }
+  }
+
+  for (const emoji of EMOJI_POOL) {
+    if (emojis.length >= unlockCount) {
+      break;
+    }
+
+    if (!emojis.includes(emoji)) {
+      emojis.push(emoji);
+    }
+  }
+
+  return emojis;
+}
+
+function getEmojiMark(count: number, cardId: number): EmojiMark | null {
+  const emojis = getUnlockedEmojis(count);
+
+  if (emojis.length === 0) {
+    return null;
+  }
+
+  const chance = Math.min(0.34, 0.16 + emojis.length * 0.025);
+  if (seededNumber(cardId * 241 + count * 17) > chance) {
+    return null;
+  }
+
+  return {
+    emoji: emojis[seededInteger(cardId * 269 + count, 0, emojis.length - 1)],
+    x: seededBetween(cardId * 277 + count, 16, 84),
+    y: seededBetween(cardId * 281 + count, 18, 122),
+    size: seededBetween(cardId * 283 + count, 28, 64),
+    rotate: seededBetween(cardId * 293 + count, -18, 18),
+    opacity: seededBetween(cardId * 307 + count, 0.78, 0.96),
+  };
+}
+
 function getVisuals(card: Card, count: number): CardVisuals {
   return {
     isGradient: isGradientEnabled(count, card.id),
@@ -315,6 +401,7 @@ function getVisuals(card: Card, count: number): CardVisuals {
     randomLineColor: count >= RANDOM_STYLE_UNLOCK_COUNT,
     textureKind: getTextureKind(count, card.id),
     finishKind: getFinishKind(count, card.id),
+    emojiMark: getEmojiMark(count, card.id),
   };
 }
 
@@ -599,6 +686,30 @@ function CardFinish({ card, kind }: { card: Card; kind: FinishKind }) {
   );
 }
 
+function CardEmoji({ mark }: { mark: EmojiMark | null }) {
+  if (!mark) {
+    return null;
+  }
+
+  return (
+    <span
+      className="cardEmoji"
+      style={
+        {
+          left: `${mark.x}%`,
+          top: `${(mark.y / 140) * 100}%`,
+          fontSize: mark.size,
+          opacity: mark.opacity,
+          transform: `translate(-50%, -50%) rotate(${mark.rotate}deg)`,
+        } as CSSProperties
+      }
+      aria-hidden="true"
+    >
+      {mark.emoji}
+    </span>
+  );
+}
+
 function createStackCard(id: number, previousColor: CardColor | undefined, count: number): StackCard {
   const card = {
     id,
@@ -727,11 +838,13 @@ export default function App() {
       const magnitude = Math.max(1, Math.hypot(directionX, directionY));
       const unitX = directionX / magnitude;
       const unitY = directionY / magnitude;
-      const speedBoost = Math.min(1.08, Math.max(1, velocity / 3600));
+      const throwSpeed = Math.max(KEYBOARD_THROW_VELOCITY, velocity);
+      const speedBoost = clamp(throwSpeed / 3200, 1, 1.18);
       const exitDistance = getExitDistance(unitX, unitY, startX, startY) * speedBoost;
       const targetX = unitX * exitDistance;
       const targetY = unitY * exitDistance;
-      const duration = Math.max(1.7, Math.min(2.15, 2.2 - velocity / 11000));
+      const pixelsPerSecond = clamp(throwSpeed * 0.76, 880, 3200);
+      const duration = clamp(exitDistance / pixelsPerSecond, MIN_FLIGHT_DURATION, MAX_FLIGHT_DURATION);
       const startRotate = Math.max(-14, Math.min(14, startX / 26));
       const nextFlightId = flightId.current + 1;
       const nextThrown = thrownRef.current + 1;
@@ -743,27 +856,31 @@ export default function App() {
       thrownRef.current = nextThrown;
       lastThrowAt.current = now;
 
-      setFlyingCards((value) => [
-        ...value,
-        {
-          ...topCard,
-          flightId: nextFlightId,
-          startX,
-          startY,
-          startRotate,
-          targetX,
-          targetY,
-          targetRotate: spin,
-          duration,
-        },
-      ]);
+      flushSync(() => {
+        setFlyingCards((value) => [
+          ...value,
+          {
+            ...topCard,
+            flightId: nextFlightId,
+            startX,
+            startY,
+            startRotate,
+            targetX,
+            targetY,
+            targetRotate: spin,
+            duration,
+          },
+        ]);
+      });
       setParticles((value) => [...value.slice(-36), ...createParticles(topCard, startX, startY, nextParticleId)]);
       setCombo((value) => (now - previousThrowAt < COMBO_WINDOW_MS ? value + 1 : 1));
-      setThrown(nextThrown);
-      setCards((value) => nextStack(value, nextThrown));
-      controls.set({ rotate: 0, scale: 1, opacity: 1 });
-      x.set(0);
-      y.set(14);
+      window.requestAnimationFrame(() => {
+        setThrown(nextThrown);
+        setCards((value) => nextStack(value, nextThrown));
+        controls.set({ rotate: 0, scale: 1, opacity: 1 });
+        x.set(0);
+        y.set(14);
+      });
       vibrate();
     },
     [controls, topCard, x, y],
@@ -968,6 +1085,7 @@ export default function App() {
                 patternLevel={card.patternLevel}
                 randomLineColor={card.randomLineColor}
               />
+              <CardEmoji mark={card.emojiMark} />
               <CardFinish card={card} kind={card.finishKind} />
             </motion.div>
           );
@@ -993,7 +1111,7 @@ export default function App() {
             }}
             transition={{
               duration: card.duration,
-              ease: "linear",
+              ease: [0.14, 0.72, 0.24, 1],
             }}
             onAnimationComplete={() => {
               setFlyingCards((value) => value.filter((flyingCard) => flyingCard.flightId !== card.flightId));
@@ -1011,6 +1129,7 @@ export default function App() {
               patternLevel={card.patternLevel}
               randomLineColor={card.randomLineColor}
             />
+            <CardEmoji mark={card.emojiMark} />
             <CardFinish card={card} kind={card.finishKind} />
           </motion.div>
         ))}

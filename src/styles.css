@@ -109,6 +109,7 @@ button {
   min-width: min(86vw, 320px);
   min-height: 460px;
   pointer-events: none;
+  isolation: isolate;
 }
 
 .card {
@@ -120,6 +121,8 @@ button {
   cursor: grab;
   pointer-events: auto;
   will-change: transform;
+  backface-visibility: hidden;
+  contain: layout paint;
   overflow: hidden;
 }
 
@@ -155,6 +158,16 @@ button {
   inset: 0;
   pointer-events: none;
   z-index: 3;
+}
+
+.cardEmoji {
+  position: absolute;
+  z-index: 3;
+  line-height: 1;
+  pointer-events: none;
+  text-shadow: 0 5px 18px rgba(0, 0, 0, 0.18);
+  filter: saturate(112%);
+  user-select: none;
 }
 
 .finish-gloss {

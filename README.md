@@ -13,6 +13,7 @@ A tiny full-screen fidget app made with Vite, React, TypeScript, and Framer Moti
 - Thin black edge-to-edge line patterns unlock as the counter climbs: 1 sweep at 30, paired lines at 50, wave patterns at 70, loose woven lines at 90, then random 0-5 colored pattern lines and random gradient mode at 100
 - Random texture families start appearing after later milestones: dots at 110, waves at 125, grid overlays at 145, stars at 165, checker patterns at 185
 - Rare card finishes start appearing after 130, with gloss and neon effects first and occasional foil cards after 200
+- Random emoji marks start appearing at 200, and the available emoji pool gains another randomly selected emoji every 100 cards after that
 - Fast repeated throws build a small combo badge, and successful throws create subtle color particles
 - Small counter, reset icon, and counter show/hide control
 - Keyboard shortcuts: arrow keys or WASD to throw, Space/Enter for a random throw, R to reset, C to toggle controls, F for fullscreen
