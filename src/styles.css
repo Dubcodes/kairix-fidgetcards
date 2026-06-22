@@ -73,12 +73,15 @@ button {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  z-index: 0;
 }
 
 .lookMode-xr {
-  background:
-    radial-gradient(circle at 50% 44%, rgba(255, 255, 255, 0.12), transparent 20%),
-    linear-gradient(135deg, #15191b, #050608);
+  background: transparent;
+}
+
+.lookMode-xr .lookBackdrop {
+  background: radial-gradient(circle at 50% 46%, transparent 0 30%, rgba(0, 0, 0, 0.08) 100%);
 }
 
 .lookBackdrop {
@@ -130,11 +133,21 @@ button {
   min-height: 294px;
   pointer-events: none;
   perspective: 900px;
+  transform: translate3d(var(--look-aim-x, 0), var(--look-aim-y, 0), 0) rotateX(var(--look-tilt-x, 0deg))
+    rotateY(var(--look-tilt-y, 0deg));
+  transform-style: preserve-3d;
+  transition: transform 80ms linear;
+  will-change: transform;
 }
 
 .lookCard,
 .lookFlyingCard {
   pointer-events: auto;
+}
+
+.lookStackCard {
+  pointer-events: none;
+  transform-style: preserve-3d;
 }
 
 .lookCard {

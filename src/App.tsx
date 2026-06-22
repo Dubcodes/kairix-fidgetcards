@@ -68,6 +68,13 @@ type Particle = {
   duration: number;
 };
 
+type GyroAim = {
+  x: number;
+  y: number;
+  rotateX: number;
+  rotateY: number;
+};
+
 type XrSessionLike = {
   end: () => Promise<void>;
   addEventListener: (type: "end", listener: () => void) => void;
@@ -830,6 +837,7 @@ export default function App() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [lookMode, setLookMode] = useState<LookModeKind | null>(null);
   const [lookModeMessage, setLookModeMessage] = useState("");
+  const [gyroAim, setGyroAim] = useState<GyroAim>({ x: 0, y: 0, rotateX: 0, rotateY: 0 });
   const flightId = useRef(0);
   const particleId = useRef(0);
   const thrownRef = useRef(0);
@@ -840,6 +848,7 @@ export default function App() {
   const lookVideoRef = useRef<HTMLVideoElement | null>(null);
   const lookStreamRef = useRef<MediaStream | null>(null);
   const xrSessionRef = useRef<XrSessionLike | null>(null);
+  const gyroAimRef = useRef<GyroAim>({ x: 0, y: 0, rotateX: 0, rotateY: 0 });
   const controls = useAnimationControls();
   const x = useMotionValue(0);
   const y = useMotionValue(0);
@@ -1005,20 +1014,33 @@ export default function App() {
     setShowControls(false);
     setLookModeMessage("Starting camera...");
 
-    const xr = (
-      navigator as Navigator & {
-        xr?: {
-          isSessionSupported?: (mode: "immersive-ar") => Promise<boolean>;
-          requestSession?: (mode: "immersive-ar", options?: unknown) => Promise<XrSessionLike>;
-        };
-      }
-    ).xr;
-
     try {
-      const supportsAr = Boolean(await xr?.isSessionSupported?.("immersive-ar"));
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+      });
 
-      if (supportsAr && xr?.requestSession) {
-        try {
+      lookStreamRef.current = stream;
+      setLookMode("camera");
+      setLookModeMessage("Camera Throw");
+    } catch {
+      const xr = (
+        navigator as Navigator & {
+          xr?: {
+            isSessionSupported?: (mode: "immersive-ar") => Promise<boolean>;
+            requestSession?: (mode: "immersive-ar", options?: unknown) => Promise<XrSessionLike>;
+          };
+        }
+      ).xr;
+
+      try {
+        const supportsAr = Boolean(await xr?.isSessionSupported?.("immersive-ar"));
+
+        if (supportsAr && xr?.requestSession) {
           const session = await xr.requestSession("immersive-ar", {
             optionalFeatures: ["dom-overlay", "local-floor", "unbounded"],
             domOverlay: { root: document.body },
@@ -1034,24 +1056,11 @@ export default function App() {
           setLookMode("xr");
           setLookModeMessage("AR Throw");
           return;
-        } catch {
-          setLookModeMessage("Opening camera...");
         }
+      } catch {
+        // Fall through to the blocked state below.
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: {
-          facingMode: { ideal: "environment" },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        },
-      });
-
-      lookStreamRef.current = stream;
-      setLookMode("camera");
-      setLookModeMessage("Camera Throw");
-    } catch {
       setLookMode(null);
       setLookModeMessage("Camera blocked");
       window.setTimeout(() => setLookModeMessage(""), 1800);
@@ -1061,7 +1070,33 @@ export default function App() {
   useEffect(() => {
     if (lookVideoRef.current && lookStreamRef.current) {
       lookVideoRef.current.srcObject = lookStreamRef.current;
+      void lookVideoRef.current.play().catch(() => undefined);
     }
+  }, [lookMode]);
+
+  useEffect(() => {
+    if (!lookMode) {
+      gyroAimRef.current = { x: 0, y: 0, rotateX: 0, rotateY: 0 };
+      setGyroAim(gyroAimRef.current);
+      return undefined;
+    }
+
+    const handleOrientation = (event: DeviceOrientationEvent) => {
+      const gamma = clamp(event.gamma ?? 0, -32, 32);
+      const beta = clamp((event.beta ?? 0) - 55, -38, 38);
+      const nextAim = {
+        x: gamma * 1.6,
+        y: beta * 1.25,
+        rotateX: clamp(-beta * 0.22, -12, 12),
+        rotateY: clamp(gamma * 0.24, -12, 12),
+      };
+
+      gyroAimRef.current = nextAim;
+      setGyroAim(nextAim);
+    };
+
+    window.addEventListener("deviceorientation", handleOrientation, true);
+    return () => window.removeEventListener("deviceorientation", handleOrientation, true);
   }, [lookMode]);
 
   useEffect(() => {
@@ -1222,7 +1257,40 @@ export default function App() {
           <div className="lookBackdrop" />
           <div className="lookReticle" aria-hidden="true" />
           <div className="lookModeLabel">{lookModeMessage}</div>
-          <div className="lookCardStage">
+          <div
+            className="lookCardStage"
+            style={
+              {
+                "--look-aim-x": `${gyroAim.x}px`,
+                "--look-aim-y": `${gyroAim.y}px`,
+                "--look-tilt-x": `${gyroAim.rotateX}deg`,
+                "--look-tilt-y": `${gyroAim.rotateY}deg`,
+              } as CSSProperties
+            }
+          >
+            {cards.slice(0, -1).map((card, index) => {
+              const depth = cards.length - 1 - index;
+
+              return (
+                <div
+                  key={`look-stack-${card.id}`}
+                  className="card lookStackCard"
+                  style={{
+                    background: cardBackground(card, card.isGradient),
+                    borderColor: colorToCss(card.color, 12, -18),
+                    boxShadow: "0 20px 60px rgba(0, 0, 0, 0.24), 0 1px 0 rgba(255, 255, 255, 0.22) inset",
+                    transform: `translate3d(${depth * 8}px, ${depth * 12}px, ${-depth * 34}px) rotate(${depth * -1.4}deg) scale(${
+                      1 - depth * 0.04
+                    })`,
+                    zIndex: 4 - depth,
+                  } as CSSProperties}
+                  aria-hidden="true"
+                >
+                  <CardFace card={card} />
+                </div>
+              );
+            })}
+
             <motion.div
               key={`look-${topCard.id}`}
               className="card lookCard"
@@ -1256,6 +1324,8 @@ export default function App() {
                   x: card.startX,
                   y: card.startY,
                   rotate: card.startRotate,
+                  rotateX: 0,
+                  rotateY: 0,
                   scale: 1,
                   opacity: 1,
                 }}
@@ -1263,12 +1333,15 @@ export default function App() {
                   x: card.targetX,
                   y: card.targetY,
                   rotate: card.targetRotate,
-                  scale: 0.52,
-                  opacity: 0,
+                  rotateX: 62,
+                  rotateY: card.targetX > 0 ? -18 : 18,
+                  scale: [1, 0.82, 0.5],
+                  opacity: [1, 1, 0],
                 }}
                 transition={{
                   duration: card.duration,
                   ease: "linear",
+                  times: [0, 0.78, 1],
                 }}
                 style={{
                   background: cardBackground(card, card.isGradient),
