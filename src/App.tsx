@@ -1,6 +1,6 @@
 import { animate, motion, useAnimationControls, useMotionValue, useTransform, type PanInfo } from "framer-motion";
 import { Eye, EyeOff, Maximize2, Minimize2, RotateCcw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { flushSync } from "react-dom";
 
 type CardColor = {
@@ -106,8 +106,8 @@ const THROW_VELOCITY = 650;
 const THROW_OFFSET = 130;
 const KEYBOARD_THROW_VELOCITY = 980;
 const COMBO_WINDOW_MS = 850;
-const MIN_FLIGHT_DURATION = 0.44;
-const MAX_FLIGHT_DURATION = 1.28;
+const MIN_FLIGHT_DURATION = 0.22;
+const MAX_FLIGHT_DURATION = 3.25;
 const EMOJI_POOL = [
   "✨",
   "🌈",
@@ -810,7 +810,7 @@ export default function App() {
     [topCard.color],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     controls.set({ rotate: 0, scale: 1, opacity: 1 });
     x.set(0);
     y.set(14);
@@ -838,12 +838,12 @@ export default function App() {
       const magnitude = Math.max(1, Math.hypot(directionX, directionY));
       const unitX = directionX / magnitude;
       const unitY = directionY / magnitude;
-      const throwSpeed = Math.max(KEYBOARD_THROW_VELOCITY, velocity);
-      const speedBoost = clamp(throwSpeed / 3200, 1, 1.18);
+      const throwSpeed = clamp(velocity || Math.hypot(startX, startY) * 3.2, 220, 5200);
+      const speedBoost = clamp(throwSpeed / 3000, 0.88, 1.28);
       const exitDistance = getExitDistance(unitX, unitY, startX, startY) * speedBoost;
       const targetX = unitX * exitDistance;
       const targetY = unitY * exitDistance;
-      const pixelsPerSecond = clamp(throwSpeed * 0.76, 880, 3200);
+      const pixelsPerSecond = clamp(throwSpeed * 0.92, 260, 4700);
       const duration = clamp(exitDistance / pixelsPerSecond, MIN_FLIGHT_DURATION, MAX_FLIGHT_DURATION);
       const startRotate = Math.max(-14, Math.min(14, startX / 26));
       const nextFlightId = flightId.current + 1;
@@ -857,6 +857,9 @@ export default function App() {
       lastThrowAt.current = now;
 
       flushSync(() => {
+        controls.set({ rotate: 0, scale: 1, opacity: 1 });
+        x.set(0);
+        y.set(14);
         setFlyingCards((value) => [
           ...value,
           {
@@ -871,16 +874,11 @@ export default function App() {
             duration,
           },
         ]);
+        setThrown(nextThrown);
+        setCards((value) => nextStack(value, nextThrown));
       });
       setParticles((value) => [...value.slice(-36), ...createParticles(topCard, startX, startY, nextParticleId)]);
       setCombo((value) => (now - previousThrowAt < COMBO_WINDOW_MS ? value + 1 : 1));
-      window.requestAnimationFrame(() => {
-        setThrown(nextThrown);
-        setCards((value) => nextStack(value, nextThrown));
-        controls.set({ rotate: 0, scale: 1, opacity: 1 });
-        x.set(0);
-        y.set(14);
-      });
       vibrate();
     },
     [controls, topCard, x, y],
@@ -1058,6 +1056,7 @@ export default function App() {
                 isTop
                   ? controls
                   : {
+                      x: depth * 9,
                       y: depth * 14,
                       rotate: depth * -1.6,
                       scale: 1 - depth * 0.035,
@@ -1065,7 +1064,7 @@ export default function App() {
               }
               transition={{ type: "spring", stiffness: 360, damping: 32, mass: 0.75 }}
               style={{
-                x: isTop ? x : 0,
+                x: isTop ? x : undefined,
                 y: isTop ? y : undefined,
                 rotate: isTop ? rotate : undefined,
                 background: cardBackground(card, card.isGradient),
@@ -1111,7 +1110,7 @@ export default function App() {
             }}
             transition={{
               duration: card.duration,
-              ease: [0.14, 0.72, 0.24, 1],
+              ease: "linear",
             }}
             onAnimationComplete={() => {
               setFlyingCards((value) => value.filter((flyingCard) => flyingCard.flightId !== card.flightId));
