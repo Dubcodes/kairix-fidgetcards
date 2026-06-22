@@ -53,6 +53,30 @@ The container serves the app on port `80`, with the compose file mapping host po
 
 Camera passthrough and WebXR generally require a secure browser context on phones. For phone testing outside `localhost`, serve the app through HTTPS or a secure reverse proxy/tunnel.
 
+## Temporary TryCloudflare URL
+
+The compose file includes an optional `trycloudflared` service for quick phone testing over HTTPS. It is disabled by default.
+
+Enable it locally with:
+
+```bash
+COMPOSE_PROFILES=trycloudflare docker compose up -d --build
+```
+
+Then get the temporary public URL from the tunnel logs:
+
+```bash
+docker compose logs -f trycloudflared
+```
+
+Look for a generated `https://...trycloudflare.com` URL. That URL is temporary and will change when the tunnel restarts.
+
+You can also copy `.env.example` to `.env` and set:
+
+```text
+COMPOSE_PROFILES=trycloudflare
+```
+
 ## Portainer Deployment
 
 1. In Portainer, go to **Stacks**.
@@ -70,9 +94,25 @@ services:
     ports:
       - "3095:80"
     restart: unless-stopped
+
+  trycloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: fidget-cards-trycloudflared
+    profiles:
+      - trycloudflare
+    command: tunnel --no-autoupdate --url http://fidget-cards:80
+    depends_on:
+      - fidget-cards
+    restart: unless-stopped
 ```
 
-6. Deploy the stack.
-7. Visit `http://YOUR_SERVER_IP:3095`.
+6. To enable the temporary HTTPS tunnel in Portainer, add an environment variable for the stack:
+
+```text
+COMPOSE_PROFILES=trycloudflare
+```
+
+7. Deploy the stack.
+8. Visit `http://YOUR_SERVER_IP:3095`, or open the `trycloudflared` container logs and use the generated `https://...trycloudflare.com` URL for phone camera testing.
 
 If Portainer is deploying from a Git repository, keep the `Dockerfile`, `nginx.conf`, `package.json`, `src/`, and `index.html` files in the repository root so the build context is correct.

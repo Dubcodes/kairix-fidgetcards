@@ -6,3 +6,13 @@ services:
     ports:
       - "3095:80"
     restart: unless-stopped
+
+  trycloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: fidget-cards-trycloudflared
+    profiles:
+      - trycloudflare
+    command: tunnel --no-autoupdate --url http://fidget-cards:80
+    depends_on:
+      - fidget-cards
+    restart: unless-stopped
