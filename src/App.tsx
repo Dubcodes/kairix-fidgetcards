@@ -44,6 +44,10 @@ type FlyingCard = StackCard & {
   startX: number;
   startY: number;
   startRotate: number;
+  startRotateX: number;
+  targetRotateX: number;
+  targetRotateY: number;
+  targetScale: number;
   targetX: number;
   targetY: number;
   targetRotate: number;
@@ -132,6 +136,7 @@ const COMBO_WINDOW_MS = 850;
 const EYE_LONG_PRESS_MS = 620;
 const MIN_FLIGHT_DURATION = 0.22;
 const MAX_FLIGHT_DURATION = 3.25;
+const DEFAULT_LOOK_CARD_ANGLE = 18;
 const EMOJI_POOL = [
   "✨",
   "🌈",
@@ -838,6 +843,8 @@ export default function App() {
   const [lookMode, setLookMode] = useState<LookModeKind | null>(null);
   const [lookModeMessage, setLookModeMessage] = useState("");
   const [gyroAim, setGyroAim] = useState<GyroAim>({ x: 0, y: 0, rotateX: 0, rotateY: 0 });
+  const [lookCardAngle, setLookCardAngle] = useState(DEFAULT_LOOK_CARD_ANGLE);
+  const [lookCalibrationOpen, setLookCalibrationOpen] = useState(false);
   const flightId = useRef(0);
   const particleId = useRef(0);
   const thrownRef = useRef(0);
@@ -896,6 +903,10 @@ export default function App() {
       const pixelsPerSecond = clamp(throwSpeed * 0.92, 260, 4700);
       const duration = clamp(exitDistance / pixelsPerSecond, MIN_FLIGHT_DURATION, MAX_FLIGHT_DURATION);
       const startRotate = rotate.get();
+      const startRotateX = lookMode ? lookCardAngle : 0;
+      const targetRotateX = lookMode ? lookCardAngle + clamp(Math.abs(unitY) * 42 + throwSpeed / 145, 34, 72) : 0;
+      const targetRotateY = lookMode ? clamp(-unitX * 30, -30, 30) : 0;
+      const targetScale = lookMode ? clamp(1 - throwSpeed / 13500, 0.58, 0.9) : 0.98;
       const nextFlightId = flightId.current + 1;
       const nextThrown = thrownRef.current + 1;
       const now = Date.now();
@@ -919,6 +930,10 @@ export default function App() {
             startX,
             startY,
             startRotate,
+            startRotateX,
+            targetRotateX,
+            targetRotateY,
+            targetScale,
             targetX,
             targetY,
             targetRotate: spin,
@@ -932,7 +947,7 @@ export default function App() {
       setCombo((value) => (now - previousThrowAt < COMBO_WINDOW_MS ? value + 1 : 1));
       vibrate();
     },
-    [controls, rotate, topCard, x, y],
+    [controls, lookCardAngle, lookMode, rotate, topCard, x, y],
   );
 
   const snapBack = useCallback(async () => {
@@ -1011,7 +1026,6 @@ export default function App() {
   }, []);
 
   const enterLookThrowMode = useCallback(async () => {
-    setShowControls(false);
     setLookModeMessage("Starting camera...");
 
     try {
@@ -1026,7 +1040,7 @@ export default function App() {
 
       lookStreamRef.current = stream;
       setLookMode("camera");
-      setLookModeMessage("Camera Throw");
+      setLookModeMessage("Camera Throw + Gyro");
     } catch {
       const xr = (
         navigator as Navigator & {
@@ -1257,6 +1271,36 @@ export default function App() {
           <div className="lookBackdrop" />
           <div className="lookReticle" aria-hidden="true" />
           <div className="lookModeLabel">{lookModeMessage}</div>
+          <div className={`lookCalibration${lookCalibrationOpen ? " open" : ""}`}>
+            <button
+              className="lookCalibrationTab"
+              type="button"
+              onClick={() => setLookCalibrationOpen((value) => !value)}
+              aria-label={lookCalibrationOpen ? "Hide card angle controls" : "Show card angle controls"}
+              title="Card angle"
+            />
+            <label className="lookCalibrationPanel">
+              <span>Angle</span>
+              <input
+                type="range"
+                min="-12"
+                max="56"
+                step="1"
+                value={lookCardAngle}
+                onChange={(event) => setLookCardAngle(Number(event.currentTarget.value))}
+                aria-label="Adjust card angle"
+              />
+              <button
+                className="lookCalibrationReset"
+                type="button"
+                onClick={() => setLookCardAngle(DEFAULT_LOOK_CARD_ANGLE)}
+                aria-label="Reset card angle"
+                title="Reset angle"
+              >
+                <RotateCcw size={14} strokeWidth={2.4} />
+              </button>
+            </label>
+          </div>
           <div
             className="lookCardStage"
             style={
@@ -1279,9 +1323,9 @@ export default function App() {
                     background: cardBackground(card, card.isGradient),
                     borderColor: colorToCss(card.color, 12, -18),
                     boxShadow: "0 20px 60px rgba(0, 0, 0, 0.24), 0 1px 0 rgba(255, 255, 255, 0.22) inset",
-                    transform: `translate3d(${depth * 8}px, ${depth * 12}px, ${-depth * 34}px) rotate(${depth * -1.4}deg) scale(${
-                      1 - depth * 0.04
-                    })`,
+                    transform: `translate3d(${depth * 8}px, ${depth * 12}px, ${-depth * 34}px) rotateX(${
+                      lookCardAngle * 0.8
+                    }deg) rotate(${depth * -1.4}deg) scale(${1 - depth * 0.04})`,
                     zIndex: 4 - depth,
                   } as CSSProperties}
                   aria-hidden="true"
@@ -1306,6 +1350,7 @@ export default function App() {
                 x,
                 y,
                 rotate,
+                rotateX: lookCardAngle,
                 background: cardBackground(topCard, topCard.isGradient),
                 borderColor: colorToCss(topCard.color, 12, -18),
                 boxShadow: "0 34px 90px rgba(0, 0, 0, 0.32), 0 1px 0 rgba(255, 255, 255, 0.3) inset",
@@ -1324,7 +1369,7 @@ export default function App() {
                   x: card.startX,
                   y: card.startY,
                   rotate: card.startRotate,
-                  rotateX: 0,
+                  rotateX: card.startRotateX,
                   rotateY: 0,
                   scale: 1,
                   opacity: 1,
@@ -1333,15 +1378,15 @@ export default function App() {
                   x: card.targetX,
                   y: card.targetY,
                   rotate: card.targetRotate,
-                  rotateX: 62,
-                  rotateY: card.targetX > 0 ? -18 : 18,
-                  scale: [1, 0.82, 0.5],
-                  opacity: [1, 1, 0],
+                  rotateX: card.targetRotateX,
+                  rotateY: card.targetRotateY,
+                  scale: [1, card.targetScale, card.targetScale * 0.82],
+                  opacity: [1, 1, 0.98],
                 }}
                 transition={{
                   duration: card.duration,
                   ease: "linear",
-                  times: [0, 0.78, 1],
+                  times: [0, 0.72, 1],
                 }}
                 style={{
                   background: cardBackground(card, card.isGradient),
