@@ -25,6 +25,7 @@ type Card = {
 
 type TextureKind = "none" | "dots" | "grid" | "waves" | "stars" | "checker";
 type FinishKind = "none" | "gloss" | "neon" | "foil";
+type LookModeKind = "camera" | "xr";
 
 type CardVisuals = {
   isGradient: boolean;
@@ -65,6 +66,12 @@ type Particle = {
   hue: number;
   size: number;
   duration: number;
+};
+
+type XrSessionLike = {
+  end: () => Promise<void>;
+  addEventListener: (type: "end", listener: () => void) => void;
+  removeEventListener?: (type: "end", listener: () => void) => void;
 };
 
 type Point = {
@@ -115,6 +122,7 @@ const THROW_VELOCITY = 650;
 const THROW_OFFSET = 130;
 const KEYBOARD_THROW_VELOCITY = 980;
 const COMBO_WINDOW_MS = 850;
+const EYE_LONG_PRESS_MS = 620;
 const MIN_FLIGHT_DURATION = 0.22;
 const MAX_FLIGHT_DURATION = 3.25;
 const EMOJI_POOL = [
@@ -726,6 +734,22 @@ function CardEmoji({ mark }: { mark: EmojiMark | null }) {
   );
 }
 
+function CardFace({ card }: { card: StackCard }) {
+  return (
+    <>
+      <CardTexture card={card} kind={card.textureKind} />
+      <CardLines
+        card={card}
+        lineCount={card.lineCount}
+        patternLevel={card.patternLevel}
+        randomLineColor={card.randomLineColor}
+      />
+      <CardEmoji mark={card.emojiMark} />
+      <CardFinish card={card} kind={card.finishKind} />
+    </>
+  );
+}
+
 function createStackCard(id: number, previousColor: CardColor | undefined, count: number): StackCard {
   const card = {
     id,
@@ -763,7 +787,7 @@ function vibrate() {
 }
 
 function getExitDistance(unitX: number, unitY: number, startX: number, startY: number) {
-  const stage = document.querySelector<HTMLElement>(".stage");
+  const stage = document.querySelector<HTMLElement>(".lookCardStage") ?? document.querySelector<HTMLElement>(".stage");
   const stageRect = stage?.getBoundingClientRect();
   const viewportWidth = window.innerWidth || 1280;
   const viewportHeight = window.innerHeight || 720;
@@ -804,11 +828,18 @@ export default function App() {
   const [combo, setCombo] = useState(0);
   const [showControls, setShowControls] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [lookMode, setLookMode] = useState<LookModeKind | null>(null);
+  const [lookModeMessage, setLookModeMessage] = useState("");
   const flightId = useRef(0);
   const particleId = useRef(0);
   const thrownRef = useRef(0);
   const lastThrowAt = useRef(0);
   const grabPoint = useRef<Point>({ x: 0, y: 0 });
+  const eyeHoldTimer = useRef<number | null>(null);
+  const eyeLongPressed = useRef(false);
+  const lookVideoRef = useRef<HTMLVideoElement | null>(null);
+  const lookStreamRef = useRef<MediaStream | null>(null);
+  const xrSessionRef = useRef<XrSessionLike | null>(null);
   const controls = useAnimationControls();
   const x = useMotionValue(0);
   const y = useMotionValue(0);
@@ -961,6 +992,123 @@ export default function App() {
     return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
   }, []);
 
+  const stopLookMode = useCallback(() => {
+    lookStreamRef.current?.getTracks().forEach((track) => track.stop());
+    lookStreamRef.current = null;
+    void xrSessionRef.current?.end().catch(() => undefined);
+    xrSessionRef.current = null;
+    setLookMode(null);
+    setLookModeMessage("");
+  }, []);
+
+  const enterLookThrowMode = useCallback(async () => {
+    setShowControls(false);
+    setLookModeMessage("Starting camera...");
+
+    const xr = (
+      navigator as Navigator & {
+        xr?: {
+          isSessionSupported?: (mode: "immersive-ar") => Promise<boolean>;
+          requestSession?: (mode: "immersive-ar", options?: unknown) => Promise<XrSessionLike>;
+        };
+      }
+    ).xr;
+
+    try {
+      const supportsAr = Boolean(await xr?.isSessionSupported?.("immersive-ar"));
+
+      if (supportsAr && xr?.requestSession) {
+        try {
+          const session = await xr.requestSession("immersive-ar", {
+            optionalFeatures: ["dom-overlay", "local-floor", "unbounded"],
+            domOverlay: { root: document.body },
+          });
+          const handleEnd = () => {
+            xrSessionRef.current = null;
+            setLookMode(null);
+            setLookModeMessage("");
+          };
+
+          session.addEventListener("end", handleEnd);
+          xrSessionRef.current = session;
+          setLookMode("xr");
+          setLookModeMessage("AR Throw");
+          return;
+        } catch {
+          setLookModeMessage("Opening camera...");
+        }
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+      });
+
+      lookStreamRef.current = stream;
+      setLookMode("camera");
+      setLookModeMessage("Camera Throw");
+    } catch {
+      setLookMode(null);
+      setLookModeMessage("Camera blocked");
+      window.setTimeout(() => setLookModeMessage(""), 1800);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (lookVideoRef.current && lookStreamRef.current) {
+      lookVideoRef.current.srcObject = lookStreamRef.current;
+    }
+  }, [lookMode]);
+
+  useEffect(() => {
+    return () => {
+      lookStreamRef.current?.getTracks().forEach((track) => track.stop());
+      void xrSessionRef.current?.end().catch(() => undefined);
+    };
+  }, []);
+
+  function startEyeHold() {
+    if (lookMode) {
+      return;
+    }
+
+    eyeLongPressed.current = false;
+
+    if (eyeHoldTimer.current) {
+      window.clearTimeout(eyeHoldTimer.current);
+    }
+
+    eyeHoldTimer.current = window.setTimeout(() => {
+      eyeLongPressed.current = true;
+      void enterLookThrowMode();
+    }, EYE_LONG_PRESS_MS);
+  }
+
+  function clearEyeHold() {
+    if (eyeHoldTimer.current) {
+      window.clearTimeout(eyeHoldTimer.current);
+      eyeHoldTimer.current = null;
+    }
+  }
+
+  function handleEyeClick() {
+    if (eyeLongPressed.current) {
+      eyeLongPressed.current = false;
+      return;
+    }
+
+    if (lookMode) {
+      stopLookMode();
+      return;
+    }
+
+    setShowControls((value) => !value);
+  }
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.repeat) {
@@ -1025,14 +1173,18 @@ export default function App() {
   }
 
   return (
-    <main className="app" style={{ background: theme.background }}>
+    <main className={`app${lookMode ? " lookActive" : ""}`} style={{ background: theme.background }}>
       <div className="topBar">
         <button
           className="iconButton"
           type="button"
-          onClick={() => setShowControls((value) => !value)}
-          aria-label={showControls ? "Hide controls" : "Show controls"}
-          title={showControls ? "Hide controls (C)" : "Show controls (C)"}
+          onPointerDown={startEyeHold}
+          onPointerUp={clearEyeHold}
+          onPointerLeave={clearEyeHold}
+          onPointerCancel={clearEyeHold}
+          onClick={handleEyeClick}
+          aria-label={lookMode ? "Exit camera throw mode" : showControls ? "Hide controls" : "Show controls"}
+          title={lookMode ? "Exit camera throw mode" : showControls ? "Hide controls (C), hold for camera throw" : "Show controls (C), hold for camera throw"}
         >
           {showControls ? <EyeOff size={17} strokeWidth={2.4} /> : <Eye size={17} strokeWidth={2.4} />}
         </button>
@@ -1063,6 +1215,73 @@ export default function App() {
           </>
         ) : null}
       </div>
+
+      {lookMode ? (
+        <section className={`lookMode lookMode-${lookMode}`} aria-label="Camera throw mode">
+          {lookMode === "camera" ? <video ref={lookVideoRef} className="lookVideo" autoPlay playsInline muted /> : null}
+          <div className="lookBackdrop" />
+          <div className="lookReticle" aria-hidden="true" />
+          <div className="lookModeLabel">{lookModeMessage}</div>
+          <div className="lookCardStage">
+            <motion.div
+              key={`look-${topCard.id}`}
+              className="card lookCard"
+              drag
+              dragMomentum={false}
+              dragElastic={0.12}
+              onPointerDown={captureGrabPoint}
+              onDrag={(_, info) => rotateDuringDrag(info)}
+              onDragEnd={(_, info) => throwCard(info)}
+              animate={controls}
+              transition={{ type: "spring", stiffness: 360, damping: 32, mass: 0.75 }}
+              style={{
+                x,
+                y,
+                rotate,
+                background: cardBackground(topCard, topCard.isGradient),
+                borderColor: colorToCss(topCard.color, 12, -18),
+                boxShadow: "0 34px 90px rgba(0, 0, 0, 0.32), 0 1px 0 rgba(255, 255, 255, 0.3) inset",
+                scale: 1,
+              }}
+              whileTap={{ scale: 0.985, cursor: "grabbing" }}
+            >
+              <CardFace card={topCard} />
+            </motion.div>
+
+            {flyingCards.map((card) => (
+              <motion.div
+                key={`look-flight-${card.flightId}`}
+                className="card flyingCard lookFlyingCard"
+                initial={{
+                  x: card.startX,
+                  y: card.startY,
+                  rotate: card.startRotate,
+                  scale: 1,
+                  opacity: 1,
+                }}
+                animate={{
+                  x: card.targetX,
+                  y: card.targetY,
+                  rotate: card.targetRotate,
+                  scale: 0.52,
+                  opacity: 0,
+                }}
+                transition={{
+                  duration: card.duration,
+                  ease: "linear",
+                }}
+                style={{
+                  background: cardBackground(card, card.isGradient),
+                  borderColor: colorToCss(card.color, 12, -18),
+                  boxShadow: "0 28px 80px rgba(0, 0, 0, 0.28), 0 1px 0 rgba(255, 255, 255, 0.3) inset",
+                }}
+              >
+                <CardFace card={card} />
+              </motion.div>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       <section className="stage" aria-label="Swipe cards">
         {cards.map((card, index) => {
@@ -1095,15 +1314,7 @@ export default function App() {
               }}
               whileTap={isTop ? { scale: 0.985, cursor: "grabbing" } : undefined}
             >
-              <CardTexture card={card} kind={card.textureKind} />
-              <CardLines
-                card={card}
-                lineCount={card.lineCount}
-                patternLevel={card.patternLevel}
-                randomLineColor={card.randomLineColor}
-              />
-              <CardEmoji mark={card.emojiMark} />
-              <CardFinish card={card} kind={card.finishKind} />
+              <CardFace card={card} />
             </motion.div>
           );
         })}
@@ -1139,15 +1350,7 @@ export default function App() {
               boxShadow: "0 28px 80px rgba(0, 0, 0, 0.24), 0 1px 0 rgba(255, 255, 255, 0.3) inset",
             }}
           >
-            <CardTexture card={card} kind={card.textureKind} />
-            <CardLines
-              card={card}
-              lineCount={card.lineCount}
-              patternLevel={card.patternLevel}
-              randomLineColor={card.randomLineColor}
-            />
-            <CardEmoji mark={card.emojiMark} />
-            <CardFinish card={card} kind={card.finishKind} />
+            <CardFace card={card} />
           </motion.div>
         ))}
 

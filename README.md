@@ -16,6 +16,7 @@ A tiny full-screen fidget app made with Vite, React, TypeScript, and Framer Moti
 - Random emoji marks start appearing at 200, and the available emoji pool gains another randomly selected emoji every 100 cards after that
 - Fast repeated throws build a small combo badge, and successful throws create subtle color particles
 - Small counter, reset icon, and counter show/hide control
+- Long-press the eye icon on a phone to enter look-throw mode: WebXR AR is used where available, otherwise the app falls back to camera passthrough
 - Keyboard shortcuts: arrow keys or WASD to throw, Space/Enter for a random throw, R to reset, C to toggle controls, F for fullscreen
 - Mobile haptic vibration on successful throws where supported
 - Dockerized static build served by Nginx on container port `80`
@@ -49,6 +50,8 @@ http://localhost:3095
 ```
 
 The container serves the app on port `80`, with the compose file mapping host port `3095` to container port `80`.
+
+Camera passthrough and WebXR generally require a secure browser context on phones. For phone testing outside `localhost`, serve the app through HTTPS or a secure reverse proxy/tunnel.
 
 ## Portainer Deployment
 

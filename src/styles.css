@@ -41,14 +41,109 @@ button {
   height: 100vh;
 }
 
+.app.lookActive .stage {
+  opacity: 0;
+  pointer-events: none;
+}
+
 .topBar {
   position: fixed;
   top: max(14px, env(safe-area-inset-top));
   right: max(14px, env(safe-area-inset-right));
-  z-index: 20;
+  z-index: 70;
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.lookMode {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: #050505;
+  touch-action: none;
+}
+
+.lookVideo {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.lookMode-xr {
+  background:
+    radial-gradient(circle at 50% 44%, rgba(255, 255, 255, 0.12), transparent 20%),
+    linear-gradient(135deg, #15191b, #050608);
+}
+
+.lookBackdrop {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 50% 46%, transparent 0 26%, rgba(0, 0, 0, 0.08) 47%, rgba(0, 0, 0, 0.26) 100%),
+    linear-gradient(180deg, rgba(0, 0, 0, 0.12), rgba(0, 0, 0, 0.24));
+  pointer-events: none;
+}
+
+.lookReticle {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.56);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 0 8px rgba(255, 255, 255, 0.04);
+  pointer-events: none;
+}
+
+.lookModeLabel {
+  position: fixed;
+  left: max(14px, env(safe-area-inset-left));
+  bottom: max(14px, env(safe-area-inset-bottom));
+  z-index: 3;
+  padding: 8px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.28);
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  backdrop-filter: blur(16px);
+}
+
+.lookCardStage {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: min(58vw, 340px);
+  height: min(58vh, 476px);
+  min-width: 210px;
+  min-height: 294px;
+  pointer-events: none;
+  perspective: 900px;
+}
+
+.lookCard,
+.lookFlyingCard {
+  pointer-events: auto;
+}
+
+.lookCard {
+  z-index: 8;
+}
+
+.lookFlyingCard {
+  z-index: 12;
+  pointer-events: none;
 }
 
 .counter,
