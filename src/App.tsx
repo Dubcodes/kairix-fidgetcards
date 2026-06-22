@@ -1,6 +1,15 @@
-import { animate, motion, useAnimationControls, useMotionValue, useTransform, type PanInfo } from "framer-motion";
+import { animate, motion, useAnimationControls, useMotionValue, type PanInfo } from "framer-motion";
 import { Eye, EyeOff, Maximize2, Minimize2, RotateCcw } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { flushSync } from "react-dom";
 
 type CardColor = {
@@ -224,6 +233,13 @@ function seededInteger(seed: number, min: number, max: number) {
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
+}
+
+function rotationFromGrab(grab: Point, offsetX: number, offsetY: number) {
+  const torque = (grab.x * offsetY - grab.y * offsetX) / 2600;
+  const drift = offsetX / 42;
+
+  return clamp(torque + drift, -38, 38);
 }
 
 function getLineCount(count: number, cardId: number) {
@@ -792,10 +808,11 @@ export default function App() {
   const particleId = useRef(0);
   const thrownRef = useRef(0);
   const lastThrowAt = useRef(0);
+  const grabPoint = useRef<Point>({ x: 0, y: 0 });
   const controls = useAnimationControls();
   const x = useMotionValue(0);
   const y = useMotionValue(0);
-  const rotate = useTransform(x, [-320, 320], [-12, 12]);
+  const rotate = useMotionValue(0);
   const topCard = cards[cards.length - 1];
 
   const theme = useMemo(
@@ -813,16 +830,9 @@ export default function App() {
   useLayoutEffect(() => {
     controls.set({ rotate: 0, scale: 1, opacity: 1 });
     x.set(0);
-    y.set(14);
-    const rise = animate(y, 0, {
-      type: "spring",
-      stiffness: 360,
-      damping: 32,
-      mass: 0.75,
-    });
-
-    return () => rise.stop();
-  }, [controls, topCard.id, x, y]);
+    y.set(0);
+    rotate.set(0);
+  }, [controls, rotate, topCard.id, x, y]);
 
   useEffect(() => {
     if (combo <= 1) {
@@ -845,7 +855,7 @@ export default function App() {
       const targetY = unitY * exitDistance;
       const pixelsPerSecond = clamp(throwSpeed * 0.92, 260, 4700);
       const duration = clamp(exitDistance / pixelsPerSecond, MIN_FLIGHT_DURATION, MAX_FLIGHT_DURATION);
-      const startRotate = Math.max(-14, Math.min(14, startX / 26));
+      const startRotate = rotate.get();
       const nextFlightId = flightId.current + 1;
       const nextThrown = thrownRef.current + 1;
       const now = Date.now();
@@ -859,7 +869,8 @@ export default function App() {
       flushSync(() => {
         controls.set({ rotate: 0, scale: 1, opacity: 1 });
         x.set(0);
-        y.set(14);
+        y.set(0);
+        rotate.set(0);
         setFlyingCards((value) => [
           ...value,
           {
@@ -881,18 +892,18 @@ export default function App() {
       setCombo((value) => (now - previousThrowAt < COMBO_WINDOW_MS ? value + 1 : 1));
       vibrate();
     },
-    [controls, topCard, x, y],
+    [controls, rotate, topCard, x, y],
   );
 
   const snapBack = useCallback(async () => {
-    await controls.start({
-      x: 0,
-      y: 0,
-      rotate: 0,
-      opacity: 1,
-      transition: { type: "spring", stiffness: 420, damping: 30 },
-    });
-  }, [controls]);
+    controls.set({ opacity: 1, scale: 1 });
+
+    await Promise.all([
+      animate(x, 0, { type: "spring", stiffness: 420, damping: 30 }),
+      animate(y, 0, { type: "spring", stiffness: 420, damping: 30 }),
+      animate(rotate, 0, { type: "spring", stiffness: 420, damping: 30 }),
+    ]);
+  }, [controls, rotate, x, y]);
 
   const throwFromInput = useCallback(
     async (velocityX: number, velocityY: number, offsetX = 0, offsetY = 0) => {
@@ -907,15 +918,29 @@ export default function App() {
 
       const directionX = velocityX || offsetX || (Math.random() > 0.5 ? 1 : -1);
       const directionY = velocityY || offsetY || -1;
-      const spin = Math.max(-34, Math.min(34, offsetX / 5 + velocityX / 90));
+      const angularVelocity = distance > 0 ? (grabPoint.current.x * velocityY - grabPoint.current.y * velocityX) / 6200 : 0;
+      const spin = clamp(rotate.get() + angularVelocity + velocityX / 140, -92, 92);
 
       completeThrow(directionX, directionY, velocity || KEYBOARD_THROW_VELOCITY, spin, offsetX, offsetY);
     },
-    [completeThrow, snapBack],
+    [completeThrow, rotate, snapBack],
   );
 
   function throwCard(info: PanInfo) {
     void throwFromInput(info.velocity.x, info.velocity.y, info.offset.x, info.offset.y);
+  }
+
+  function captureGrabPoint(event: ReactPointerEvent<HTMLDivElement>) {
+    const rect = event.currentTarget.getBoundingClientRect();
+
+    grabPoint.current = {
+      x: event.clientX - rect.left - rect.width / 2,
+      y: event.clientY - rect.top - rect.height / 2,
+    };
+  }
+
+  function rotateDuringDrag(info: PanInfo) {
+    rotate.set(rotationFromGrab(grabPoint.current, info.offset.x, info.offset.y));
   }
 
   async function toggleFullscreen() {
@@ -1051,29 +1076,22 @@ export default function App() {
               drag={isTop}
               dragMomentum={false}
               dragElastic={0.12}
+              onPointerDown={isTop ? captureGrabPoint : undefined}
+              onDrag={isTop ? (_, info) => rotateDuringDrag(info) : undefined}
               onDragEnd={(_, info) => throwCard(info)}
-              animate={
-                isTop
-                  ? controls
-                  : {
-                      x: depth * 9,
-                      y: depth * 14,
-                      rotate: depth * -1.6,
-                      scale: 1 - depth * 0.035,
-                    }
-              }
+              animate={isTop ? controls : undefined}
               transition={{ type: "spring", stiffness: 360, damping: 32, mass: 0.75 }}
               style={{
-                x: isTop ? x : undefined,
-                y: isTop ? y : undefined,
-                rotate: isTop ? rotate : undefined,
+                x: isTop ? x : depth * 9,
+                y: isTop ? y : depth * 14,
+                rotate: isTop ? rotate : depth * -1.6,
                 background: cardBackground(card, card.isGradient),
                 borderColor: colorToCss(card.color, 12, -18),
                 boxShadow: isTop
                   ? "0 28px 80px rgba(0, 0, 0, 0.24), 0 1px 0 rgba(255, 255, 255, 0.3) inset"
                   : "0 16px 45px rgba(0, 0, 0, 0.16)",
                 zIndex: index + 1,
-                scale: isTop ? 1 : undefined,
+                scale: isTop ? 1 : 1 - depth * 0.035,
               }}
               whileTap={isTop ? { scale: 0.985, cursor: "grabbing" } : undefined}
             >
