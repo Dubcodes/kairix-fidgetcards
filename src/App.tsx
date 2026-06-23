@@ -44,6 +44,7 @@ type FlightMode = "screen" | "look";
 type FlyingCard = StackCard & {
   flightMode: FlightMode;
   flightId: number;
+  transformOrigin: string;
   startX: number;
   startY: number;
   startZ: number;
@@ -159,15 +160,16 @@ const CHECKER_UNLOCK_COUNT = 185;
 const FOIL_UNLOCK_COUNT = 200;
 const EMOJI_UNLOCK_COUNT = 200;
 const EMOJI_UNLOCK_STEP = 100;
-const THROW_VELOCITY = 650;
-const THROW_OFFSET = 130;
+const THROW_VELOCITY = 240;
+const THROW_OFFSET = 24;
 const KEYBOARD_THROW_VELOCITY = 980;
 const COMBO_WINDOW_MS = 850;
 const EYE_LONG_PRESS_MS = 620;
 const MIN_FLIGHT_DURATION = 0.22;
 const MAX_FLIGHT_DURATION = 3.25;
 const AR_CARD_ANGLE = 54;
-const LOOK_CARD_LINGER_MS = 12000;
+const LOOK_CARD_LINGER_MS = 5200;
+const MAX_LOOK_FLYING_CARDS = 7;
 const EMOJI_POOL = [
   "✨",
   "🌈",
@@ -995,6 +997,7 @@ export default function App() {
   const thrownRef = useRef(0);
   const lastThrowAt = useRef(0);
   const grabPoint = useRef<Point>({ x: 0, y: 0 });
+  const grabOriginRef = useRef("50% 50%");
   const eyeHoldTimer = useRef<number | null>(null);
   const eyeLongPressed = useRef(false);
   const xrSessionRef = useRef<XrSessionLike | null>(null);
@@ -1004,6 +1007,7 @@ export default function App() {
   const x = useMotionValue(0);
   const y = useMotionValue(0);
   const rotate = useMotionValue(0);
+  const [grabOrigin, setGrabOrigin] = useState("50% 50%");
   const topCard = cards[cards.length - 1];
   const isArReady = lookMode === "ar" && arStatus === "ready";
 
@@ -1069,6 +1073,7 @@ export default function App() {
       const now = Date.now();
       const previousThrowAt = lastThrowAt.current;
       const nextParticleId = particleId.current + 10;
+      const currentGrabOrigin = grabOriginRef.current;
       flightId.current = nextFlightId;
       particleId.current = nextParticleId;
       thrownRef.current = nextThrown;
@@ -1079,12 +1084,12 @@ export default function App() {
         x.set(0);
         y.set(0);
         rotate.set(0);
-        setFlyingCards((value) => [
-          ...value,
-          {
+        setFlyingCards((value) => {
+          const nextCard: FlyingCard = {
             ...topCard,
             flightMode: isLookThrow ? "look" : "screen",
             flightId: nextFlightId,
+            transformOrigin: currentGrabOrigin,
             startX,
             startY,
             startZ: 0,
@@ -1099,10 +1104,29 @@ export default function App() {
             targetZ,
             targetRotate: spin,
             duration,
-          },
-        ]);
+          };
+          const nextCards = [...value, nextCard];
+
+          if (!isLookThrow) {
+            return nextCards;
+          }
+
+          const lookCards = nextCards.filter((card) => card.flightMode === "look");
+
+          if (lookCards.length <= MAX_LOOK_FLYING_CARDS) {
+            return nextCards;
+          }
+
+          const removedFlightIds = new Set(
+            lookCards.slice(0, lookCards.length - MAX_LOOK_FLYING_CARDS).map((card) => card.flightId),
+          );
+
+          return nextCards.filter((card) => !removedFlightIds.has(card.flightId));
+        });
         setThrown(nextThrown);
         setCards((value) => nextStack(value, nextThrown));
+        grabOriginRef.current = "50% 50%";
+        setGrabOrigin("50% 50%");
       });
       if (!isLookThrow) {
         setParticles((value) => [...value.slice(-36), ...createParticles(topCard, startX, startY, nextParticleId)]);
@@ -1121,6 +1145,8 @@ export default function App() {
       animate(y, 0, { type: "spring", stiffness: 420, damping: 30 }),
       animate(rotate, 0, { type: "spring", stiffness: 420, damping: 30 }),
     ]);
+    grabOriginRef.current = "50% 50%";
+    setGrabOrigin("50% 50%");
   }, [controls, rotate, x, y]);
 
   const throwFromInput = useCallback(
@@ -1150,11 +1176,15 @@ export default function App() {
 
   function captureGrabPoint(event: ReactPointerEvent<HTMLDivElement>) {
     const rect = event.currentTarget.getBoundingClientRect();
+    const originX = event.clientX - rect.left;
+    const originY = event.clientY - rect.top;
 
     grabPoint.current = {
-      x: event.clientX - rect.left - rect.width / 2,
-      y: event.clientY - rect.top - rect.height / 2,
+      x: originX - rect.width / 2,
+      y: originY - rect.height / 2,
     };
+    grabOriginRef.current = `${originX}px ${originY}px`;
+    setGrabOrigin(grabOriginRef.current);
   }
 
   function rotateDuringDrag(info: PanInfo) {
@@ -1492,7 +1522,7 @@ export default function App() {
                     y,
                     rotate,
                     rotateX: AR_CARD_ANGLE,
-                    transformOrigin: "center center",
+                    transformOrigin: grabOrigin,
                     background: cardBackground(topCard, topCard.isGradient),
                     borderColor: colorToCss(topCard.color, 12, -18),
                     boxShadow: "0 34px 90px rgba(0, 0, 0, 0.32), 0 1px 0 rgba(255, 255, 255, 0.3) inset",
@@ -1541,7 +1571,7 @@ export default function App() {
                       background: cardBackground(card, card.isGradient),
                       borderColor: colorToCss(card.color, 12, -18),
                       boxShadow: "0 28px 80px rgba(0, 0, 0, 0.28), 0 1px 0 rgba(255, 255, 255, 0.3) inset",
-                      transformOrigin: "center center",
+                      transformOrigin: card.transformOrigin,
                     }}
                   >
                     <CardFace card={card} />
@@ -1574,6 +1604,7 @@ export default function App() {
                 x: isTop ? x : depth * 9,
                 y: isTop ? y : depth * 14,
                 rotate: isTop ? rotate : depth * -1.6,
+                transformOrigin: isTop ? grabOrigin : "center center",
                 background: cardBackground(card, card.isGradient),
                 borderColor: colorToCss(card.color, 12, -18),
                 boxShadow: isTop
@@ -1618,6 +1649,7 @@ export default function App() {
               background: cardBackground(card, card.isGradient),
               borderColor: colorToCss(card.color, 12, -18),
               boxShadow: "0 28px 80px rgba(0, 0, 0, 0.24), 0 1px 0 rgba(255, 255, 255, 0.3) inset",
+              transformOrigin: card.transformOrigin,
             }}
           >
             <CardFace card={card} />
