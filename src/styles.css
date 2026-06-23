@@ -21,6 +21,12 @@ body,
   overflow: hidden;
 }
 
+html.xrActive,
+body.xrActive,
+body.xrActive #root {
+  background: transparent !important;
+}
+
 button {
   font: inherit;
 }
@@ -44,6 +50,11 @@ button {
 .app.lookActive .stage {
   opacity: 0;
   pointer-events: none;
+}
+
+.app.lookActive {
+  background: transparent !important;
+  transition: none;
 }
 
 .topBar {

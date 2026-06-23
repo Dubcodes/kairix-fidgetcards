@@ -1179,6 +1179,16 @@ export default function App() {
     return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
   }, []);
 
+  useEffect(() => {
+    document.documentElement.classList.toggle("xrActive", Boolean(lookMode));
+    document.body.classList.toggle("xrActive", Boolean(lookMode));
+
+    return () => {
+      document.documentElement.classList.remove("xrActive");
+      document.body.classList.remove("xrActive");
+    };
+  }, [lookMode]);
+
   const stopLookMode = useCallback(() => {
     const session = xrSessionRef.current;
     xrSessionRef.current = null;
@@ -1378,7 +1388,7 @@ export default function App() {
   }
 
   return (
-    <main className={`app${lookMode ? " lookActive" : ""}`} style={{ background: theme.background }}>
+    <main className={`app${lookMode ? " lookActive" : ""}`} style={{ background: lookMode ? "transparent" : theme.background }}>
       <div className="topBar">
         <button
           className="iconButton"
