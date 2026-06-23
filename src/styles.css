@@ -63,32 +63,8 @@ button {
   display: grid;
   place-items: center;
   overflow: hidden;
-  background: #050505;
+  background: transparent;
   touch-action: none;
-}
-
-.lookVideo {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  z-index: 0;
-  opacity: 0.2;
-  transition: opacity 180ms ease;
-}
-
-.camera-ready .lookVideo {
-  opacity: 1;
-}
-
-.lookBackdrop {
-  position: absolute;
-  inset: 0;
-  background:
-    radial-gradient(circle at 50% 46%, transparent 0 26%, rgba(0, 0, 0, 0.08) 47%, rgba(0, 0, 0, 0.26) 100%),
-    linear-gradient(180deg, rgba(0, 0, 0, 0.12), rgba(0, 0, 0, 0.24));
-  pointer-events: none;
 }
 
 .lookReticle {
@@ -102,34 +78,6 @@ button {
   transform: translate(-50%, -50%);
   box-shadow: 0 0 0 8px rgba(255, 255, 255, 0.04);
   pointer-events: none;
-}
-
-.floorGuide {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  pointer-events: none;
-}
-
-.floorGuide::before,
-.floorGuide::after {
-  content: "";
-  position: absolute;
-  left: -10%;
-  width: 120%;
-  transform: rotate(var(--floor-roll, 0deg));
-  transform-origin: center;
-}
-
-.floorGuide::before {
-  top: var(--horizon-y, 42%);
-  border-top: 1px dashed rgba(255, 255, 255, 0.18);
-}
-
-.floorGuide::after {
-  top: var(--floor-y, 76%);
-  border-top: 2px solid rgba(255, 255, 255, 0.28);
-  box-shadow: 0 18px 46px rgba(255, 255, 255, 0.08);
 }
 
 .lookModeLabel {
@@ -148,7 +96,8 @@ button {
   backdrop-filter: blur(16px);
 }
 
-.lookCameraNotice {
+.arNotice,
+.arModeNotice {
   position: relative;
   z-index: 64;
   display: grid;
@@ -165,122 +114,22 @@ button {
   text-align: center;
 }
 
-.lookCameraNotice strong {
+.arNotice {
+  position: fixed;
+  left: 50%;
+  top: max(68px, calc(env(safe-area-inset-top) + 54px));
+  transform: translateX(-50%);
+}
+
+.arModeNotice strong {
   font-size: 0.92rem;
   line-height: 1.2;
 }
 
-.lookCameraNotice span {
+.arModeNotice span {
   font-size: 0.76rem;
   font-weight: 760;
   opacity: 0.76;
-}
-
-.lookCalibration {
-  position: fixed;
-  left: 0;
-  top: 50%;
-  z-index: 66;
-  width: 112px;
-  transform: translate(-112px, -50%);
-  transition: transform 180ms ease;
-}
-
-.lookCalibration.open {
-  transform: translate(0, -50%);
-}
-
-.lookCalibrationTab {
-  position: absolute;
-  right: -23px;
-  top: 50%;
-  width: 25px;
-  height: 52px;
-  padding: 0;
-  border: 1px solid rgba(255, 255, 255, 0.36);
-  border-left: 0;
-  border-radius: 0 999px 999px 0;
-  background: rgba(255, 255, 255, 0.34);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16);
-  backdrop-filter: blur(18px) saturate(140%);
-  cursor: pointer;
-  transform: translateY(-50%);
-}
-
-.lookCalibrationTab::after {
-  content: "";
-  position: absolute;
-  left: 8px;
-  top: 50%;
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: rgba(20, 20, 20, 0.72);
-  transform: translateY(-50%);
-}
-
-.lookCalibrationPanel {
-  display: grid;
-  justify-items: center;
-  gap: 10px;
-  min-height: 254px;
-  padding: 14px 12px;
-  border: 1px solid rgba(255, 255, 255, 0.28);
-  border-left: 0;
-  border-radius: 0 8px 8px 0;
-  background: rgba(12, 12, 12, 0.42);
-  color: rgba(255, 255, 255, 0.88);
-  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.22);
-  backdrop-filter: blur(18px) saturate(140%);
-  font-size: 0.72rem;
-  font-weight: 850;
-  letter-spacing: 0;
-}
-
-.lookDiagnostics {
-  display: grid;
-  gap: 3px;
-  width: 100%;
-  color: rgba(255, 255, 255, 0.72);
-  font-size: 0.58rem;
-  font-weight: 760;
-  line-height: 1.12;
-  text-align: center;
-}
-
-.lookDiagnostics span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.lookCalibrationPanel input {
-  width: 132px;
-  height: 28px;
-  accent-color: #ffffff;
-  transform: rotate(-90deg);
-  transform-origin: center;
-  cursor: pointer;
-}
-
-.lookCalibrationReset {
-  display: grid;
-  place-items: center;
-  width: 34px;
-  height: 30px;
-  padding: 0;
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.16);
-  color: rgba(255, 255, 255, 0.88);
-  cursor: pointer;
-}
-
-.lookCalibrationTab:focus-visible,
-.lookCalibrationReset:focus-visible,
-.lookCalibrationPanel input:focus-visible {
-  outline: 3px solid rgba(255, 255, 255, 0.72);
-  outline-offset: 2px;
 }
 
 .lookCardStage {
@@ -295,11 +144,17 @@ button {
   pointer-events: none;
   perspective: 1320px;
   perspective-origin: 50% 58%;
-  transform: translate3d(var(--look-aim-x, 0), var(--look-aim-y, 0), 0) rotateX(var(--look-tilt-x, 0deg))
-    rotateY(var(--look-tilt-y, 0deg));
   transform-style: preserve-3d;
-  transition: transform 80ms linear;
   will-change: transform;
+}
+
+.xrRenderCanvas {
+  position: fixed;
+  inset: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .lookCard,
@@ -502,24 +357,6 @@ button {
     width: min(86vw, 420px);
     height: min(72vh, 620px);
     min-height: 360px;
-  }
-
-  .lookCalibration {
-    width: 96px;
-    transform: translate(-96px, -50%);
-  }
-
-  .lookCalibration.open {
-    transform: translate(0, -50%);
-  }
-
-  .lookCalibrationPanel {
-    min-height: 232px;
-    padding: 12px 10px;
-  }
-
-  .lookCalibrationPanel input {
-    width: 112px;
   }
 }
 

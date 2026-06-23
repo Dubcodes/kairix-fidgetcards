@@ -1,5 +1,5 @@
 import { animate, motion, useAnimationControls, useMotionValue, type PanInfo } from "framer-motion";
-import { Crosshair, Eye, EyeOff, Maximize2, Minimize2, RotateCcw } from "lucide-react";
+import { Eye, EyeOff, Maximize2, Minimize2, RotateCcw } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -25,9 +25,8 @@ type Card = {
 
 type TextureKind = "none" | "dots" | "grid" | "waves" | "stars" | "checker";
 type FinishKind = "none" | "gloss" | "neon" | "foil";
-type LookModeKind = "camera";
-type CameraStatus = "idle" | "starting" | "ready" | "blocked" | "error";
-type GyroStatus = "waiting" | "live" | "unavailable";
+type LookModeKind = "ar";
+type ArStatus = "idle" | "starting" | "ready" | "unsupported" | "error";
 
 type CardVisuals = {
   isGradient: boolean;
@@ -79,47 +78,18 @@ type Particle = {
   duration: number;
 };
 
-type GyroAim = {
-  x: number;
-  y: number;
-  rotateX: number;
-  rotateY: number;
-};
-
-type OrientationSample = {
-  alpha: number;
-  beta: number;
-  gamma: number;
-};
-
-type FloorCalibration = {
-  beta: number;
-  gamma: number;
-  isSet: boolean;
-};
-
-type FloorGuide = {
-  horizon: number;
-  floor: number;
-  pitch: number;
-  roll: number;
-};
-
-type ArDiagnostics = {
-  secure: boolean;
-  hasNavigatorXr: boolean;
-  immersiveAr: "unknown" | "supported" | "unsupported" | "error";
-  message: string;
-};
-
-type CameraDebug = {
-  trackState: string;
-  videoState: string;
-  size: string;
-};
-
 type XrSystemLike = {
   isSessionSupported?: (mode: "immersive-ar") => Promise<boolean>;
+  requestSession?: (mode: "immersive-ar", options?: unknown) => Promise<XrSessionLike>;
+};
+
+type XrSessionLike = {
+  end: () => Promise<void>;
+  addEventListener: (type: "end", listener: () => void) => void;
+  removeEventListener?: (type: "end", listener: () => void) => void;
+  requestAnimationFrame?: (callback: (time: number, frame: unknown) => void) => number;
+  requestReferenceSpace?: (type: "local-floor" | "local" | "viewer") => Promise<unknown>;
+  updateRenderState?: (state: unknown) => void;
 };
 
 type Point = {
@@ -173,13 +143,7 @@ const COMBO_WINDOW_MS = 850;
 const EYE_LONG_PRESS_MS = 620;
 const MIN_FLIGHT_DURATION = 0.22;
 const MAX_FLIGHT_DURATION = 3.25;
-const DEFAULT_LOOK_CARD_ANGLE = 42;
-const DEFAULT_FLOOR_GUIDE: FloorGuide = {
-  horizon: 42,
-  floor: 76,
-  pitch: 0,
-  roll: 0,
-};
+const AR_CARD_ANGLE = 54;
 const LOOK_CARD_LINGER_MS = 12000;
 const EMOJI_POOL = [
   "✨",
@@ -842,73 +806,64 @@ function vibrate() {
   }
 }
 
-function cameraFailureMessage(error?: unknown) {
+function arFailureMessage(error?: unknown) {
   if (!window.isSecureContext) {
-    return "Camera needs HTTPS or localhost";
+    return "AR needs HTTPS";
   }
 
-  if (!navigator.mediaDevices?.getUserMedia) {
-    return "Camera is not available in this browser";
+  const xr = (navigator as Navigator & { xr?: XrSystemLike }).xr;
+
+  if (!xr?.isSessionSupported || !xr.requestSession) {
+    return "WebXR AR is not available";
   }
 
   if (error instanceof DOMException) {
     if (error.name === "NotAllowedError" || error.name === "SecurityError") {
-      return "Camera permission blocked";
+      return "AR permission blocked";
     }
 
-    if (error.name === "NotFoundError" || error.name === "OverconstrainedError") {
-      return "No camera found";
-    }
+    return `${error.name}: ${error.message}`;
   }
 
-  return "Camera could not start";
+  return "AR could not start";
 }
 
-function createArDiagnostics(message = "AR not checked"): ArDiagnostics {
-  return {
-    secure: window.isSecureContext,
-    hasNavigatorXr: Boolean((navigator as Navigator & { xr?: XrSystemLike }).xr),
-    immersiveAr: "unknown",
-    message,
-  };
-}
+async function prepareXrSession(session: XrSessionLike) {
+  const canvas = document.createElement("canvas");
+  canvas.className = "xrRenderCanvas";
+  const gl = canvas.getContext("webgl", {
+    alpha: true,
+    antialias: true,
+    preserveDrawingBuffer: false,
+  }) as (WebGLRenderingContext & { makeXRCompatible?: () => Promise<void> }) | null;
 
-function getCameraDebug(stream: MediaStream | null, video: HTMLVideoElement | null): CameraDebug {
-  const track = stream?.getVideoTracks()[0];
-  const videoState = video ? `${video.readyState}` : "none";
-  const size = video ? `${video.videoWidth}x${video.videoHeight}` : "0x0";
-
-  return {
-    trackState: track?.readyState ?? (stream?.active ? "active" : "none"),
-    videoState,
-    size,
-  };
-}
-
-function isCameraStreamUsable(stream: MediaStream | null) {
-  const track = stream?.getVideoTracks()[0];
-
-  return Boolean(stream?.active || track?.readyState === "live");
-}
-
-function createFloorGuide(sample: OrientationSample | null, calibration: FloorCalibration): FloorGuide {
-  if (!sample) {
-    return DEFAULT_FLOOR_GUIDE;
+  if (!gl) {
+    throw new Error("WebGL unavailable");
   }
 
-  const referenceBeta = calibration.isSet ? calibration.beta : 68;
-  const referenceGamma = calibration.isSet ? calibration.gamma : 0;
-  const pitch = clamp(sample.beta - referenceBeta, -70, 70);
-  const roll = clamp(sample.gamma - referenceGamma, -45, 45);
-  const horizon = clamp(42 - pitch * 0.46, 12, 70);
-  const floor = clamp(76 - pitch * 0.34 + Math.abs(roll) * 0.1, 46, 94);
+  await gl.makeXRCompatible?.();
 
-  return {
-    horizon,
-    floor: Math.max(floor, horizon + 18),
-    pitch,
-    roll,
+  const XRWebGLLayerCtor = (window as unknown as {
+    XRWebGLLayer?: new (session: XrSessionLike, context: WebGLRenderingContext) => unknown;
+  }).XRWebGLLayer;
+
+  if (!XRWebGLLayerCtor || !session.updateRenderState) {
+    throw new Error("XR WebGL layer unavailable");
+  }
+
+  document.body.appendChild(canvas);
+  session.updateRenderState({ baseLayer: new XRWebGLLayerCtor(session, gl) });
+  await session.requestReferenceSpace?.("local-floor").catch(() => session.requestReferenceSpace?.("local"));
+
+  const drawFrame = () => {
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    session.requestAnimationFrame?.(drawFrame);
   };
+
+  session.requestAnimationFrame?.(drawFrame);
+
+  return canvas;
 }
 
 function getExitDistance(unitX: number, unitY: number, startX: number, startY: number) {
@@ -955,14 +910,7 @@ export default function App() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [lookMode, setLookMode] = useState<LookModeKind | null>(null);
   const [lookModeMessage, setLookModeMessage] = useState("");
-  const [cameraStatus, setCameraStatus] = useState<CameraStatus>("idle");
-  const [gyroAim, setGyroAim] = useState<GyroAim>({ x: 0, y: 0, rotateX: 0, rotateY: 0 });
-  const [gyroStatus, setGyroStatus] = useState<GyroStatus>("waiting");
-  const [floorGuide, setFloorGuide] = useState<FloorGuide>(DEFAULT_FLOOR_GUIDE);
-  const [lookCardAngle, setLookCardAngle] = useState(DEFAULT_LOOK_CARD_ANGLE);
-  const [lookCalibrationOpen, setLookCalibrationOpen] = useState(false);
-  const [arDiagnostics, setArDiagnostics] = useState<ArDiagnostics>(() => createArDiagnostics());
-  const [cameraDebug, setCameraDebug] = useState<CameraDebug>({ trackState: "none", videoState: "none", size: "0x0" });
+  const [arStatus, setArStatus] = useState<ArStatus>("idle");
   const flightId = useRef(0);
   const particleId = useRef(0);
   const thrownRef = useRef(0);
@@ -970,18 +918,14 @@ export default function App() {
   const grabPoint = useRef<Point>({ x: 0, y: 0 });
   const eyeHoldTimer = useRef<number | null>(null);
   const eyeLongPressed = useRef(false);
-  const lookVideoRef = useRef<HTMLVideoElement | null>(null);
-  const lookStreamRef = useRef<MediaStream | null>(null);
-  const gyroAimRef = useRef<GyroAim>({ x: 0, y: 0, rotateX: 0, rotateY: 0 });
-  const orientationSampleRef = useRef<OrientationSample | null>(null);
-  const floorCalibrationRef = useRef<FloorCalibration>({ beta: 68, gamma: 0, isSet: false });
-  const floorGuideRef = useRef<FloorGuide>(DEFAULT_FLOOR_GUIDE);
+  const xrSessionRef = useRef<XrSessionLike | null>(null);
+  const xrCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const controls = useAnimationControls();
   const x = useMotionValue(0);
   const y = useMotionValue(0);
   const rotate = useMotionValue(0);
   const topCard = cards[cards.length - 1];
-  const isLookCameraReady = lookMode === "camera" && cameraStatus === "ready";
+  const isArReady = lookMode === "ar" && arStatus === "ready";
 
   const theme = useMemo(
     () => ({
@@ -1017,36 +961,28 @@ export default function App() {
       const unitX = directionX / magnitude;
       const unitY = directionY / magnitude;
       const throwSpeed = clamp(velocity || Math.hypot(startX, startY) * 3.2, 220, 5200);
-      const isLookThrow = lookMode === "camera" && cameraStatus === "ready";
+      const isLookThrow = lookMode === "ar" && arStatus === "ready";
       const speedBoost = clamp(throwSpeed / 3000, 0.88, 1.28);
       const exitDistance = getExitDistance(unitX, unitY, startX, startY) * speedBoost;
-      const angleAmount = clamp((lookCardAngle - 8) / 64, 0, 1);
-      const aim = gyroAimRef.current;
-      const floor = floorGuideRef.current;
-      const aimX = clamp(aim.x / 58, -1, 1);
-      const aimY = clamp(aim.y / 54, -1, 1);
       const viewportHeight = window.innerHeight || 720;
-      const floorTargetY = (floor.floor / 100 - 0.5) * viewportHeight;
-      const floorPitchBoost = clamp((floor.floor - floor.horizon) / 46, 0.42, 1.2);
       const forwardDistance = isLookThrow
-        ? clamp(throwSpeed * (0.44 + angleAmount * 1.08) * floorPitchBoost + Math.hypot(startX, startY) * 5.4, 520, 6200)
+        ? clamp(throwSpeed * 1.12 + Math.hypot(startX, startY) * 5.4, 520, 6200)
         : 0;
-      const lookLateralDistance = clamp(forwardDistance * (0.2 + (1 - angleAmount) * 0.18), 160, 1380);
-      const lookLift = clamp(unitY * lookLateralDistance * 0.26 + aimY * forwardDistance * 0.04, -420, 260);
-      const lookFloorDrop = clamp(angleAmount * forwardDistance * 0.08, 40, 360);
-      const targetX = isLookThrow ? startX + unitX * lookLateralDistance + aimX * forwardDistance * 0.1 : unitX * exitDistance;
-      const targetY = isLookThrow ? clamp(floorTargetY + lookLift + lookFloorDrop, -viewportHeight * 0.32, viewportHeight * 0.78) : unitY * exitDistance;
+      const lookLateralDistance = clamp(forwardDistance * 0.24, 160, 1380);
+      const targetX = isLookThrow ? startX + unitX * lookLateralDistance : unitX * exitDistance;
+      const targetY = isLookThrow
+        ? clamp(startY + unitY * lookLateralDistance * 0.35 + forwardDistance * 0.07, -viewportHeight * 0.32, viewportHeight * 0.78)
+        : unitY * exitDistance;
       const targetZ = isLookThrow ? -forwardDistance : 0;
       const pixelsPerSecond = clamp(throwSpeed * (isLookThrow ? 0.62 : 0.92), 260, 4700);
       const duration = isLookThrow
         ? clamp(forwardDistance / pixelsPerSecond, 0.95, 6.4)
         : clamp(exitDistance / pixelsPerSecond, MIN_FLIGHT_DURATION, MAX_FLIGHT_DURATION);
       const startRotate = rotate.get();
-      const startRotateX = isLookThrow ? lookCardAngle : 0;
-      const startRotateY = isLookThrow ? clamp(aim.rotateY * 0.35, -10, 10) : 0;
-      const pitchLift = clamp((1 - angleAmount) * 32 + Math.max(0, -unitY) * 18, 6, 44);
-      const targetRotateX = isLookThrow ? clamp(74 + floor.pitch * 0.22 + pitchLift * 0.28, 52, 88) : 0;
-      const targetRotateY = isLookThrow ? clamp(startRotateY - unitX * 42 + floor.roll * 0.22 + aimX * 12, -54, 54) : 0;
+      const startRotateX = isLookThrow ? AR_CARD_ANGLE : 0;
+      const startRotateY = 0;
+      const targetRotateX = isLookThrow ? clamp(AR_CARD_ANGLE + 18 + throwSpeed / 260, 58, 88) : 0;
+      const targetRotateY = isLookThrow ? clamp(-unitX * 42, -54, 54) : 0;
       const targetScale = isLookThrow ? clamp(920 / (920 + forwardDistance * 0.62), 0.24, 0.78) : 0.98;
       const nextFlightId = flightId.current + 1;
       const nextThrown = thrownRef.current + 1;
@@ -1092,7 +1028,7 @@ export default function App() {
       setCombo((value) => (now - previousThrowAt < COMBO_WINDOW_MS ? value + 1 : 1));
       vibrate();
     },
-    [cameraStatus, controls, lookCardAngle, lookMode, rotate, topCard, x, y],
+    [arStatus, controls, lookMode, rotate, topCard, x, y],
   );
 
   const snapBack = useCallback(async () => {
@@ -1143,16 +1079,6 @@ export default function App() {
     rotate.set(rotationFromGrab(grabPoint.current, info.offset.x, info.offset.y));
   }
 
-  function calibrateFloor() {
-    const sample = orientationSampleRef.current ?? { alpha: 0, beta: 68, gamma: 0 };
-    const nextCalibration = { beta: sample.beta, gamma: sample.gamma, isSet: true };
-    const nextFloorGuide = createFloorGuide(sample, nextCalibration);
-
-    floorCalibrationRef.current = nextCalibration;
-    floorGuideRef.current = nextFloorGuide;
-    setFloorGuide(nextFloorGuide);
-  }
-
   async function toggleFullscreen() {
     if (!document.fullscreenElement) {
       await document.documentElement.requestFullscreen?.();
@@ -1172,252 +1098,76 @@ export default function App() {
   }, []);
 
   const stopLookMode = useCallback(() => {
-    lookStreamRef.current?.getTracks().forEach((track) => track.stop());
-    lookStreamRef.current = null;
+    const session = xrSessionRef.current;
+    xrSessionRef.current = null;
+    void session?.end().catch(() => undefined);
+    xrCanvasRef.current?.remove();
+    xrCanvasRef.current = null;
     setLookMode(null);
     setLookModeMessage("");
-    setCameraStatus("idle");
-    setLookCalibrationOpen(false);
+    setArStatus("idle");
     setFlyingCards((value) => value.filter((card) => card.flightMode !== "look"));
   }, []);
 
-  const attachLookVideoStream = useCallback(() => {
-    const video = lookVideoRef.current;
-    const stream = lookStreamRef.current;
-
-    if (!video || !stream) {
-      return false;
-    }
-
-    if (video.srcObject !== stream) {
-      video.srcObject = stream;
-    }
-
-    video.muted = true;
-    video.playsInline = true;
-    setCameraDebug(getCameraDebug(stream, video));
-
-    return true;
-  }, []);
-
-  const setLookVideoNode = useCallback(
-    (node: HTMLVideoElement | null) => {
-      lookVideoRef.current = node;
-
-      if (!node || !attachLookVideoStream()) {
-        return;
-      }
-
-      void node.play().catch(() => undefined);
-    },
-    [attachLookVideoStream],
-  );
-
-  const checkArSupport = useCallback(async () => {
-    const base = createArDiagnostics("Checking AR...");
-    setArDiagnostics(base);
-
-    if (!base.secure) {
-      setArDiagnostics({ ...base, immersiveAr: "unsupported", message: "AR needs HTTPS" });
-      return;
-    }
+  const enterLookThrowMode = useCallback(async () => {
+    setArStatus("starting");
+    setLookModeMessage("Starting AR...");
 
     const xr = (navigator as Navigator & { xr?: XrSystemLike }).xr;
 
-    if (!xr?.isSessionSupported) {
-      setArDiagnostics({ ...base, hasNavigatorXr: false, immersiveAr: "unsupported", message: "navigator.xr missing" });
+    if (!window.isSecureContext || !xr?.isSessionSupported || !xr.requestSession) {
+      setArStatus("unsupported");
+      setLookModeMessage(arFailureMessage());
+      window.setTimeout(() => setLookModeMessage(""), 2400);
       return;
     }
 
     try {
       const supported = await xr.isSessionSupported("immersive-ar");
-      setArDiagnostics({
-        ...base,
-        hasNavigatorXr: true,
-        immersiveAr: supported ? "supported" : "unsupported",
-        message: supported ? "immersive-ar supported" : "immersive-ar unsupported",
-      });
-    } catch (error) {
-      setArDiagnostics({
-        ...base,
-        hasNavigatorXr: true,
-        immersiveAr: "error",
-        message: error instanceof DOMException ? `${error.name}: ${error.message}` : "AR check failed",
-      });
-    }
-  }, []);
 
-  const markLookCameraReady = useCallback(() => {
-    setCameraDebug(getCameraDebug(lookStreamRef.current, lookVideoRef.current));
-
-    if (!isCameraStreamUsable(lookStreamRef.current)) {
-      return;
-    }
-
-    setCameraStatus("ready");
-    setLookModeMessage("3D Throw + Gyro");
-  }, []);
-
-  const markLookCameraError = useCallback(() => {
-    setCameraStatus("error");
-    setLookModeMessage("Camera video could not play");
-  }, []);
-
-  const resumeLookVideo = useCallback(() => {
-    if (lookMode !== "camera" || !attachLookVideoStream()) {
-      return;
-    }
-
-    const video = lookVideoRef.current;
-
-    if (!video) {
-      return;
-    }
-
-    setCameraDebug(getCameraDebug(lookStreamRef.current, video));
-
-    if (isCameraStreamUsable(lookStreamRef.current)) {
-      markLookCameraReady();
-    }
-
-    void video
-      .play()
-      .then(() => {
-        setCameraDebug(getCameraDebug(lookStreamRef.current, video));
-        if (isCameraStreamUsable(lookStreamRef.current) || video.readyState >= HTMLMediaElement.HAVE_METADATA) {
-          markLookCameraReady();
-        }
-      })
-      .catch(() => {
-        setCameraDebug(getCameraDebug(lookStreamRef.current, video));
-      });
-  }, [attachLookVideoStream, lookMode, markLookCameraReady]);
-
-  const enterLookThrowMode = useCallback(async () => {
-    setLookModeMessage("Starting camera...");
-    setCameraStatus("starting");
-    setGyroStatus("waiting");
-    setArDiagnostics(createArDiagnostics("AR not checked"));
-    void checkArSupport();
-
-    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
-      setLookMode("camera");
-      setCameraStatus("blocked");
-      setLookModeMessage(cameraFailureMessage());
-      return;
-    }
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: {
-          facingMode: { ideal: "environment" },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        },
-      });
-
-      lookStreamRef.current = stream;
-      setLookMode("camera");
-      setCameraDebug(getCameraDebug(stream, lookVideoRef.current));
-
-      if (isCameraStreamUsable(stream)) {
-        setCameraStatus("ready");
-        setLookModeMessage("3D Throw + Gyro");
-      } else {
-        setLookModeMessage("Camera stream acquired...");
+      if (!supported) {
+        setArStatus("unsupported");
+        setLookModeMessage("AR is not supported on this browser");
+        window.setTimeout(() => setLookModeMessage(""), 2400);
+        return;
       }
 
-      window.setTimeout(() => {
-        setCameraDebug(getCameraDebug(lookStreamRef.current, lookVideoRef.current));
-        if (isCameraStreamUsable(lookStreamRef.current)) {
-          markLookCameraReady();
-        }
-      }, 900);
+      const session = await xr.requestSession("immersive-ar", {
+        optionalFeatures: ["dom-overlay", "local-floor", "unbounded", "hit-test"],
+        domOverlay: { root: document.body },
+      });
+      const canvas = await prepareXrSession(session);
+      const handleEnd = () => {
+        xrSessionRef.current = null;
+        canvas.remove();
+        xrCanvasRef.current = null;
+        setLookMode(null);
+        setLookModeMessage("");
+        setArStatus("idle");
+        setFlyingCards((value) => value.filter((card) => card.flightMode !== "look"));
+      };
+
+      session.addEventListener("end", handleEnd);
+      xrSessionRef.current = session;
+      xrCanvasRef.current = canvas;
+      setLookMode("ar");
+      setArStatus("ready");
+      setLookModeMessage("AR Throw");
     } catch (error) {
-      setLookMode("camera");
-      setCameraStatus(error instanceof DOMException && error.name === "NotAllowedError" ? "blocked" : "error");
-      setLookModeMessage(cameraFailureMessage(error));
+      setArStatus("error");
+      setLookModeMessage(arFailureMessage(error));
+      void xrSessionRef.current?.end().catch(() => undefined);
+      xrSessionRef.current = null;
+      xrCanvasRef.current?.remove();
+      xrCanvasRef.current = null;
+      window.setTimeout(() => setLookModeMessage(""), 3200);
     }
-  }, [checkArSupport, markLookCameraReady]);
-
-  useEffect(() => {
-    resumeLookVideo();
-  }, [resumeLookVideo]);
-
-  useEffect(() => {
-    if (lookMode !== "camera") {
-      return undefined;
-    }
-
-    const handleResume = () => {
-      window.setTimeout(resumeLookVideo, 80);
-      window.setTimeout(resumeLookVideo, 420);
-    };
-
-    document.addEventListener("visibilitychange", handleResume);
-    window.addEventListener("focus", handleResume);
-    window.addEventListener("pageshow", handleResume);
-
-    return () => {
-      document.removeEventListener("visibilitychange", handleResume);
-      window.removeEventListener("focus", handleResume);
-      window.removeEventListener("pageshow", handleResume);
-    };
-  }, [lookMode, resumeLookVideo]);
-
-  useEffect(() => {
-    if (!lookMode) {
-      gyroAimRef.current = { x: 0, y: 0, rotateX: 0, rotateY: 0 };
-      setGyroAim(gyroAimRef.current);
-      setGyroStatus("waiting");
-      orientationSampleRef.current = null;
-      floorCalibrationRef.current = { beta: 68, gamma: 0, isSet: false };
-      floorGuideRef.current = DEFAULT_FLOOR_GUIDE;
-      setFloorGuide(DEFAULT_FLOOR_GUIDE);
-      return undefined;
-    }
-
-    const handleOrientation = (event: DeviceOrientationEvent) => {
-      const sample = {
-        alpha: event.alpha ?? 0,
-        beta: event.beta ?? 68,
-        gamma: event.gamma ?? 0,
-      };
-      const gamma = clamp(event.gamma ?? 0, -32, 32);
-      const beta = clamp((event.beta ?? 0) - 55, -38, 38);
-      const nextAim = {
-        x: gamma * 0.82,
-        y: beta * 0.58,
-        rotateX: clamp(-beta * 0.08, -4, 4),
-        rotateY: clamp(gamma * 0.1, -5, 5),
-      };
-      const nextFloorGuide = createFloorGuide(sample, floorCalibrationRef.current);
-
-      orientationSampleRef.current = sample;
-      gyroAimRef.current = nextAim;
-      floorGuideRef.current = nextFloorGuide;
-      setGyroAim(nextAim);
-      setFloorGuide(nextFloorGuide);
-      setGyroStatus("live");
-    };
-
-    window.addEventListener("deviceorientation", handleOrientation, true);
-    const timeout = window.setTimeout(() => {
-      if (!orientationSampleRef.current) {
-        setGyroStatus("unavailable");
-      }
-    }, 1600);
-
-    return () => {
-      window.clearTimeout(timeout);
-      window.removeEventListener("deviceorientation", handleOrientation, true);
-    };
-  }, [lookMode]);
+  }, []);
 
   useEffect(() => {
     return () => {
-      lookStreamRef.current?.getTracks().forEach((track) => track.stop());
+      void xrSessionRef.current?.end().catch(() => undefined);
+      xrCanvasRef.current?.remove();
     };
   }, []);
 
@@ -1473,7 +1223,7 @@ export default function App() {
         return;
       }
 
-      if (lookMode && cameraStatus !== "ready") {
+      if (lookMode && arStatus !== "ready") {
         return;
       }
 
@@ -1522,7 +1272,7 @@ export default function App() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [cameraStatus, lookMode, stopLookMode, throwFromInput]);
+  }, [arStatus, lookMode, stopLookMode, throwFromInput]);
 
   function resetCounter() {
     thrownRef.current = 0;
@@ -1544,8 +1294,8 @@ export default function App() {
           onPointerLeave={clearEyeHold}
           onPointerCancel={clearEyeHold}
           onClick={handleEyeClick}
-          aria-label={lookMode ? "Exit camera throw mode" : showControls ? "Hide controls" : "Show controls"}
-          title={lookMode ? "Exit camera throw mode" : showControls ? "Hide controls (C), hold for camera throw" : "Show controls (C), hold for camera throw"}
+          aria-label={lookMode ? "Exit AR throw mode" : showControls ? "Hide controls" : "Show controls"}
+          title={lookMode ? "Exit AR throw mode" : showControls ? "Hide controls (C), hold for AR" : "Show controls (C), hold for AR"}
         >
           {lookMode || !showControls ? <Eye size={17} strokeWidth={2.4} /> : <EyeOff size={17} strokeWidth={2.4} />}
         </button>
@@ -1577,103 +1327,26 @@ export default function App() {
         ) : null}
       </div>
 
+      {!lookMode && lookModeMessage ? (
+        <div className={`arNotice arNotice-${arStatus}`} role="status" aria-live="polite">
+          {lookModeMessage}
+        </div>
+      ) : null}
+
       {lookMode ? (
-        <section className={`lookMode lookMode-${lookMode} camera-${cameraStatus}`} aria-label="Camera throw mode">
-          <video
-            ref={setLookVideoNode}
-            className="lookVideo"
-            autoPlay
-            playsInline
-            muted
-            onLoadedMetadata={markLookCameraReady}
-            onLoadedData={markLookCameraReady}
-            onCanPlay={markLookCameraReady}
-            onPlaying={markLookCameraReady}
-            onError={markLookCameraError}
-          />
-          <div className="lookBackdrop" />
-          {isLookCameraReady ? <div className="lookReticle" aria-hidden="true" /> : null}
-          {isLookCameraReady ? (
-            <div
-              className="floorGuide"
-              style={
-                {
-                  "--floor-y": `${floorGuide.floor}%`,
-                  "--horizon-y": `${floorGuide.horizon}%`,
-                  "--floor-roll": `${floorGuide.roll * 0.42}deg`,
-                } as CSSProperties
-              }
-              aria-hidden="true"
-            />
-          ) : null}
+        <section className={`lookMode lookMode-${lookMode} ar-${arStatus}`} aria-label="AR throw mode">
+          {isArReady ? <div className="lookReticle" aria-hidden="true" /> : null}
           <div className="lookModeLabel">{lookModeMessage}</div>
-          {!isLookCameraReady ? (
-            <div className="lookCameraNotice" role="status" aria-live="polite">
+          {!isArReady ? (
+            <div className="arModeNotice" role="status" aria-live="polite">
               <strong>{lookModeMessage}</strong>
-              <span>
-                Track {cameraDebug.trackState} · Video {cameraDebug.videoState} · {cameraDebug.size}
-              </span>
               <span>Exit with the eye button.</span>
             </div>
           ) : null}
-          {isLookCameraReady ? (
+          {isArReady ? (
             <>
-              <div className={`lookCalibration${lookCalibrationOpen ? " open" : ""}`}>
-                <button
-                  className="lookCalibrationTab"
-                  type="button"
-                  onClick={() => setLookCalibrationOpen((value) => !value)}
-                  aria-label={lookCalibrationOpen ? "Hide card angle controls" : "Show card angle controls"}
-                  title="Card angle"
-                />
-                <label className="lookCalibrationPanel">
-                  <span>Angle</span>
-                  <input
-                    type="range"
-                    min="8"
-                    max="72"
-                    step="1"
-                    value={lookCardAngle}
-                    onChange={(event) => setLookCardAngle(Number(event.currentTarget.value))}
-                    aria-label="Adjust card angle"
-                  />
-                  <button
-                    className="lookCalibrationReset"
-                    type="button"
-                    onClick={calibrateFloor}
-                    aria-label="Set floor from current phone angle"
-                    title="Set floor"
-                  >
-                    <Crosshair size={14} strokeWidth={2.4} />
-                  </button>
-                  <button
-                    className="lookCalibrationReset"
-                    type="button"
-                    onClick={() => setLookCardAngle(DEFAULT_LOOK_CARD_ANGLE)}
-                    aria-label="Reset card angle"
-                    title="Reset angle"
-                  >
-                    <RotateCcw size={14} strokeWidth={2.4} />
-                  </button>
-                  <div className="lookDiagnostics" aria-live="polite">
-                    <span>Gyro {gyroStatus}</span>
-                    <span>XR {arDiagnostics.immersiveAr}</span>
-                    <span>Cam {cameraDebug.trackState} {cameraDebug.size}</span>
-                    <span>{arDiagnostics.message}</span>
-                  </div>
-                </label>
-              </div>
               <div
                 className="lookCardStage"
-                style={
-                  {
-                    "--look-aim-x": `${gyroAim.x}px`,
-                    "--look-aim-y": `${gyroAim.y}px`,
-                    "--look-tilt-x": `${gyroAim.rotateX}deg`,
-                    "--look-tilt-y": `${gyroAim.rotateY}deg`,
-                    "--floor-y": `${floorGuide.floor}%`,
-                  } as CSSProperties
-                }
               >
                 {cards.slice(0, -1).map((card, index) => {
                   const depth = cards.length - 1 - index;
@@ -1686,7 +1359,7 @@ export default function App() {
                         background: cardBackground(card, card.isGradient),
                         borderColor: colorToCss(card.color, 12, -18),
                         boxShadow: "0 20px 60px rgba(0, 0, 0, 0.24), 0 1px 0 rgba(255, 255, 255, 0.22) inset",
-                        transform: `translate3d(${depth * 7}px, ${depth * 16}px, ${-depth * 56}px) rotateX(${lookCardAngle}deg) rotate(${
+                        transform: `translate3d(${depth * 7}px, ${depth * 16}px, ${-depth * 56}px) rotateX(${AR_CARD_ANGLE}deg) rotate(${
                           depth * -1.2
                         }deg) scale(${1 - depth * 0.045})`,
                         transformOrigin: "center center",
@@ -1714,7 +1387,7 @@ export default function App() {
                     x,
                     y,
                     rotate,
-                    rotateX: lookCardAngle,
+                    rotateX: AR_CARD_ANGLE,
                     transformOrigin: "center center",
                     background: cardBackground(topCard, topCard.isGradient),
                     borderColor: colorToCss(topCard.color, 12, -18),
