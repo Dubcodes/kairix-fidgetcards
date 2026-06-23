@@ -39,18 +39,23 @@ type CardVisuals = {
 };
 
 type StackCard = Card & CardVisuals;
+type FlightMode = "screen" | "look";
 
 type FlyingCard = StackCard & {
+  flightMode: FlightMode;
   flightId: number;
   startX: number;
   startY: number;
+  startZ: number;
   startRotate: number;
   startRotateX: number;
+  startRotateY: number;
   targetRotateX: number;
   targetRotateY: number;
   targetScale: number;
   targetX: number;
   targetY: number;
+  targetZ: number;
   targetRotate: number;
   duration: number;
 };
@@ -131,7 +136,7 @@ const COMBO_WINDOW_MS = 850;
 const EYE_LONG_PRESS_MS = 620;
 const MIN_FLIGHT_DURATION = 0.22;
 const MAX_FLIGHT_DURATION = 3.25;
-const DEFAULT_LOOK_CARD_ANGLE = 18;
+const DEFAULT_LOOK_CARD_ANGLE = 42;
 const EMOJI_POOL = [
   "✨",
   "🌈",
@@ -914,17 +919,33 @@ export default function App() {
       const unitX = directionX / magnitude;
       const unitY = directionY / magnitude;
       const throwSpeed = clamp(velocity || Math.hypot(startX, startY) * 3.2, 220, 5200);
+      const isLookThrow = lookMode === "camera" && cameraStatus === "ready";
       const speedBoost = clamp(throwSpeed / 3000, 0.88, 1.28);
       const exitDistance = getExitDistance(unitX, unitY, startX, startY) * speedBoost;
-      const targetX = unitX * exitDistance;
-      const targetY = unitY * exitDistance;
-      const pixelsPerSecond = clamp(throwSpeed * 0.92, 260, 4700);
-      const duration = clamp(exitDistance / pixelsPerSecond, MIN_FLIGHT_DURATION, MAX_FLIGHT_DURATION);
+      const angleAmount = clamp((lookCardAngle - 8) / 64, 0, 1);
+      const aim = gyroAimRef.current;
+      const aimX = clamp(aim.x / 58, -1, 1);
+      const aimY = clamp(aim.y / 54, -1, 1);
+      const forwardDistance = isLookThrow
+        ? clamp(throwSpeed * (0.44 + angleAmount * 1.08) + Math.hypot(startX, startY) * 5.4, 520, 5800)
+        : 0;
+      const lookLateralDistance = clamp(forwardDistance * (0.2 + (1 - angleAmount) * 0.18), 160, 1380);
+      const lookLift = clamp(unitY * lookLateralDistance * 0.48 + aimY * forwardDistance * 0.08, -620, 520);
+      const lookFloorDrop = clamp(angleAmount * forwardDistance * 0.13, 80, 620);
+      const targetX = isLookThrow ? startX + unitX * lookLateralDistance + aimX * forwardDistance * 0.1 : unitX * exitDistance;
+      const targetY = isLookThrow ? startY + lookLift + lookFloorDrop : unitY * exitDistance;
+      const targetZ = isLookThrow ? -forwardDistance : 0;
+      const pixelsPerSecond = clamp(throwSpeed * (isLookThrow ? 1.05 : 0.92), 260, 4700);
+      const duration = isLookThrow
+        ? clamp(forwardDistance / pixelsPerSecond, 0.34, 2.95)
+        : clamp(exitDistance / pixelsPerSecond, MIN_FLIGHT_DURATION, MAX_FLIGHT_DURATION);
       const startRotate = rotate.get();
-      const startRotateX = lookMode ? lookCardAngle : 0;
-      const targetRotateX = lookMode ? lookCardAngle + clamp(Math.abs(unitY) * 42 + throwSpeed / 145, 34, 72) : 0;
-      const targetRotateY = lookMode ? clamp(-unitX * 30, -30, 30) : 0;
-      const targetScale = lookMode ? clamp(1 - throwSpeed / 13500, 0.58, 0.9) : 0.98;
+      const startRotateX = isLookThrow ? lookCardAngle : 0;
+      const startRotateY = isLookThrow ? clamp(aim.rotateY * 0.35, -10, 10) : 0;
+      const pitchLift = clamp((1 - angleAmount) * 32 + Math.max(0, -unitY) * 18, 6, 44);
+      const targetRotateX = isLookThrow ? clamp(lookCardAngle + pitchLift + throwSpeed / 240, 26, 86) : 0;
+      const targetRotateY = isLookThrow ? clamp(startRotateY - unitX * 42 + aimX * 12, -54, 54) : 0;
+      const targetScale = isLookThrow ? clamp(920 / (920 + forwardDistance * 0.62), 0.24, 0.78) : 0.98;
       const nextFlightId = flightId.current + 1;
       const nextThrown = thrownRef.current + 1;
       const now = Date.now();
@@ -944,16 +965,20 @@ export default function App() {
           ...value,
           {
             ...topCard,
+            flightMode: isLookThrow ? "look" : "screen",
             flightId: nextFlightId,
             startX,
             startY,
+            startZ: 0,
             startRotate,
             startRotateX,
+            startRotateY,
             targetRotateX,
             targetRotateY,
             targetScale,
             targetX,
             targetY,
+            targetZ,
             targetRotate: spin,
             duration,
           },
@@ -965,7 +990,7 @@ export default function App() {
       setCombo((value) => (now - previousThrowAt < COMBO_WINDOW_MS ? value + 1 : 1));
       vibrate();
     },
-    [controls, lookCardAngle, lookMode, rotate, topCard, x, y],
+    [cameraStatus, controls, lookCardAngle, lookMode, rotate, topCard, x, y],
   );
 
   const snapBack = useCallback(async () => {
@@ -1041,6 +1066,7 @@ export default function App() {
     setLookModeMessage("");
     setCameraStatus("idle");
     setLookCalibrationOpen(false);
+    setFlyingCards((value) => value.filter((card) => card.flightMode !== "look"));
   }, []);
 
   const enterLookThrowMode = useCallback(async () => {
@@ -1080,7 +1106,7 @@ export default function App() {
     }
 
     setCameraStatus("ready");
-    setLookModeMessage("Camera Throw + Gyro");
+    setLookModeMessage("3D Throw + Gyro");
   }, []);
 
   const markLookCameraError = useCallback(() => {
@@ -1335,8 +1361,8 @@ export default function App() {
                   <span>Angle</span>
                   <input
                     type="range"
-                    min="-12"
-                    max="56"
+                    min="8"
+                    max="72"
                     step="1"
                     value={lookCardAngle}
                     onChange={(event) => setLookCardAngle(Number(event.currentTarget.value))}
@@ -1375,9 +1401,10 @@ export default function App() {
                         background: cardBackground(card, card.isGradient),
                         borderColor: colorToCss(card.color, 12, -18),
                         boxShadow: "0 20px 60px rgba(0, 0, 0, 0.24), 0 1px 0 rgba(255, 255, 255, 0.22) inset",
-                        transform: `translate3d(${depth * 8}px, ${depth * 12}px, ${-depth * 34}px) rotateX(${
-                          lookCardAngle * 0.8
-                        }deg) rotate(${depth * -1.4}deg) scale(${1 - depth * 0.04})`,
+                        transform: `translate3d(${depth * 7}px, ${depth * 16}px, ${-depth * 56}px) rotateX(${lookCardAngle}deg) rotate(${
+                          depth * -1.2
+                        }deg) scale(${1 - depth * 0.045})`,
+                        transformOrigin: "center center",
                         zIndex: 4 - depth,
                       } as CSSProperties}
                       aria-hidden="true"
@@ -1403,6 +1430,7 @@ export default function App() {
                     y,
                     rotate,
                     rotateX: lookCardAngle,
+                    transformOrigin: "center center",
                     background: cardBackground(topCard, topCard.isGradient),
                     borderColor: colorToCss(topCard.color, 12, -18),
                     boxShadow: "0 34px 90px rgba(0, 0, 0, 0.32), 0 1px 0 rgba(255, 255, 255, 0.3) inset",
@@ -1413,37 +1441,43 @@ export default function App() {
                   <CardFace card={topCard} />
                 </motion.div>
 
-                {flyingCards.map((card) => (
+                {flyingCards.filter((card) => card.flightMode === "look").map((card) => (
                   <motion.div
                     key={`look-flight-${card.flightId}`}
                     className="card flyingCard lookFlyingCard"
                     initial={{
                       x: card.startX,
                       y: card.startY,
+                      z: card.startZ,
                       rotate: card.startRotate,
                       rotateX: card.startRotateX,
-                      rotateY: 0,
+                      rotateY: card.startRotateY,
                       scale: 1,
                       opacity: 1,
                     }}
                     animate={{
-                      x: card.targetX,
-                      y: card.targetY,
+                      x: [card.startX, card.startX + (card.targetX - card.startX) * 0.56, card.targetX],
+                      y: [card.startY, card.startY + (card.targetY - card.startY) * 0.34 - 90, card.targetY],
+                      z: [card.startZ, card.targetZ * 0.42, card.targetZ],
                       rotate: card.targetRotate,
                       rotateX: card.targetRotateX,
                       rotateY: card.targetRotateY,
-                      scale: [1, card.targetScale, card.targetScale * 0.82],
-                      opacity: [1, 1, 0.98],
+                      scale: [1, Math.min(0.95, card.targetScale * 1.18), card.targetScale],
+                      opacity: 1,
                     }}
                     transition={{
                       duration: card.duration,
                       ease: "linear",
-                      times: [0, 0.72, 1],
+                      times: [0, 0.58, 1],
+                    }}
+                    onAnimationComplete={() => {
+                      setFlyingCards((value) => value.filter((flyingCard) => flyingCard.flightId !== card.flightId));
                     }}
                     style={{
                       background: cardBackground(card, card.isGradient),
                       borderColor: colorToCss(card.color, 12, -18),
                       boxShadow: "0 28px 80px rgba(0, 0, 0, 0.28), 0 1px 0 rgba(255, 255, 255, 0.3) inset",
+                      transformOrigin: "center center",
                     }}
                   >
                     <CardFace card={card} />
@@ -1491,7 +1525,7 @@ export default function App() {
           );
         })}
 
-        {flyingCards.map((card) => (
+        {flyingCards.filter((card) => card.flightMode === "screen").map((card) => (
           <motion.div
             key={card.flightId}
             className="card flyingCard"

@@ -248,7 +248,8 @@ button {
   min-width: 210px;
   min-height: 294px;
   pointer-events: none;
-  perspective: 900px;
+  perspective: 1320px;
+  perspective-origin: 50% 58%;
   transform: translate3d(var(--look-aim-x, 0), var(--look-aim-y, 0), 0) rotateX(var(--look-tilt-x, 0deg))
     rotateY(var(--look-tilt-y, 0deg));
   transform-style: preserve-3d;
@@ -259,6 +260,7 @@ button {
 .lookCard,
 .lookFlyingCard {
   pointer-events: auto;
+  transform-style: preserve-3d;
 }
 
 .lookStackCard {
@@ -273,6 +275,7 @@ button {
 .lookFlyingCard {
   z-index: 12;
   pointer-events: none;
+  will-change: transform;
 }
 
 .counter,
