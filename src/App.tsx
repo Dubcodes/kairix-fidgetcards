@@ -1276,7 +1276,6 @@ export default function App() {
 
       {lookMode ? (
         <section className={`lookMode lookMode-${lookMode} ar-${arStatus}`} aria-label="AR throw mode">
-          {isArReady ? <div className="lookReticle" aria-hidden="true" /> : null}
           <div className="lookModeLabel">{lookModeMessage}</div>
           {!isArReady ? (
             <div className="arModeNotice" role="status" aria-live="polite">

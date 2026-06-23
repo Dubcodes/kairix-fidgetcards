@@ -120,6 +120,7 @@ export type ArEngine = {
 const MAX_THROWN_CARDS = 8;
 const CARD_WIDTH = 0.42;
 const CARD_HEIGHT = 0.58;
+const CARD_FACE_INSET = 0.92;
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
@@ -214,6 +215,10 @@ function cardModelMatrix(position: Vec3, right: Vec3, up: Vec3, forward: Vec3, w
   matrix[15] = 1;
 
   return matrix;
+}
+
+function offsetTowardCamera(position: Vec3, forward: Vec3, amount: number) {
+  return vecAdd(position, vecScale(forward, -amount));
 }
 
 function compileShader(gl: WebGLRenderingContext, type: number, source: string) {
@@ -419,17 +424,39 @@ export async function createArEngine({
       forward: { x: 0, y: 0, z: -1 },
     };
 
-    const drawCard = (card: ArCard, modelMatrix: Float32Array, viewProjection: Float32Array, alpha = 0.96) => {
+    const drawPlane = (modelMatrix: Float32Array, viewProjection: Float32Array, color: readonly [number, number, number], alpha = 0.96) => {
       const mvp = multiplyMatrix4(viewProjection, modelMatrix);
-      const [red, green, blue] = hslToRgb(card.color);
 
       gl.useProgram(renderer.program);
       gl.bindBuffer(gl.ARRAY_BUFFER, renderer.vertexBuffer);
       gl.enableVertexAttribArray(renderer.positionLocation);
       gl.vertexAttribPointer(renderer.positionLocation, 3, gl.FLOAT, false, 0, 0);
       gl.uniformMatrix4fv(renderer.mvpLocation, false, mvp);
-      gl.uniform4f(renderer.colorLocation, red, green, blue, alpha);
+      gl.uniform4f(renderer.colorLocation, color[0], color[1], color[2], alpha);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    };
+
+    const drawCard = (
+      card: ArCard,
+      position: Vec3,
+      right: Vec3,
+      up: Vec3,
+      forward: Vec3,
+      width: number,
+      height: number,
+      spin: number,
+      viewProjection: Float32Array,
+      alpha = 0.96,
+    ) => {
+      const facePosition = offsetTowardCamera(position, forward, 0.006);
+      const [red, green, blue] = hslToRgb(card.color);
+      drawPlane(cardModelMatrix(position, right, up, forward, width * 1.08, height * 1.08, spin), viewProjection, [0.02, 0.02, 0.025], alpha * 0.74);
+      drawPlane(
+        cardModelMatrix(facePosition, right, up, forward, width * CARD_FACE_INSET, height * CARD_FACE_INSET, spin),
+        viewProjection,
+        [red, green, blue],
+        alpha,
+      );
     };
 
     const updateThrownCards = (deltaSeconds: number) => {
@@ -507,7 +534,13 @@ export async function createArEngine({
         for (const thrownCard of thrownCards) {
           drawCard(
             thrownCard.card,
-            cardModelMatrix(thrownCard.position, thrownCard.right, thrownCard.up, thrownCard.forward, CARD_WIDTH, CARD_HEIGHT, thrownCard.spin),
+            thrownCard.position,
+            thrownCard.right,
+            thrownCard.up,
+            thrownCard.forward,
+            CARD_WIDTH,
+            CARD_HEIGHT,
+            thrownCard.spin,
             viewProjection,
             clamp(1 - thrownCard.age / 10, 0.28, 0.96),
           );
@@ -517,7 +550,13 @@ export async function createArEngine({
         const activePosition = vecAdd(vecAdd(lastCamera.position, vecScale(lastCamera.forward, 0.82)), vecScale(lastCamera.up, -0.08));
         drawCard(
           activeCard,
-          cardModelMatrix(activePosition, lastCamera.right, lastCamera.up, lastCamera.forward, CARD_WIDTH * 0.9, CARD_HEIGHT * 0.9, 0),
+          activePosition,
+          lastCamera.right,
+          lastCamera.up,
+          lastCamera.forward,
+          CARD_WIDTH * 0.92,
+          CARD_HEIGHT * 0.92,
+          0,
           viewProjection,
           0.98,
         );
@@ -562,12 +601,17 @@ export async function createArEngine({
         const speed = clamp(gesture.throwSpeed / 850, 0.45, 5.8);
         const lateral = speed * 0.26;
         const lift = speed * 0.1;
+        const releaseRight = clamp(gesture.unitX * 0.22, -0.28, 0.28);
+        const releaseUp = clamp(-gesture.unitY * 0.12, -0.2, 0.2);
 
         thrownCards.push({
           card,
           position: vecAdd(
-            vecAdd(vecAdd(lastCamera.position, vecScale(lastCamera.forward, 0.82)), vecScale(lastCamera.right, offsetRight)),
-            vecScale(lastCamera.up, offsetUp - 0.08),
+            vecAdd(
+              vecAdd(lastCamera.position, vecScale(lastCamera.forward, 0.88)),
+              vecScale(lastCamera.right, offsetRight + releaseRight),
+            ),
+            vecScale(lastCamera.up, offsetUp + releaseUp - 0.08),
           ),
           velocity: vecAdd(
             vecAdd(vecScale(lastCamera.forward, speed), vecScale(lastCamera.right, gesture.unitX * lateral)),
