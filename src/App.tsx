@@ -1155,6 +1155,24 @@ export default function App() {
     setFlyingCards((value) => value.filter((card) => card.flightMode !== "look"));
   }, []);
 
+  const attachLookVideoStream = useCallback(() => {
+    const video = lookVideoRef.current;
+    const stream = lookStreamRef.current;
+
+    if (!video || !stream) {
+      return false;
+    }
+
+    if (video.srcObject !== stream) {
+      video.srcObject = stream;
+    }
+
+    video.muted = true;
+    video.playsInline = true;
+
+    return true;
+  }, []);
+
   const checkArSupport = useCallback(async () => {
     const base = createArDiagnostics("Checking AR...");
     setArDiagnostics(base);
@@ -1189,6 +1207,20 @@ export default function App() {
     }
   }, []);
 
+  const markLookCameraReady = useCallback(() => {
+    if (!lookStreamRef.current?.active) {
+      return;
+    }
+
+    setCameraStatus("ready");
+    setLookModeMessage("3D Throw + Gyro");
+  }, []);
+
+  const markLookCameraError = useCallback(() => {
+    setCameraStatus("error");
+    setLookModeMessage("Camera video could not play");
+  }, []);
+
   const enterLookThrowMode = useCallback(async () => {
     setLookModeMessage("Starting camera...");
     setCameraStatus("starting");
@@ -1215,43 +1247,35 @@ export default function App() {
 
       lookStreamRef.current = stream;
       setLookMode("camera");
-      setLookModeMessage("Waiting for camera...");
+      setLookModeMessage("Camera stream acquired...");
+
+      window.setTimeout(() => {
+        if (lookStreamRef.current?.active) {
+          markLookCameraReady();
+        }
+      }, 900);
     } catch (error) {
       setLookMode("camera");
       setCameraStatus(error instanceof DOMException && error.name === "NotAllowedError" ? "blocked" : "error");
       setLookModeMessage(cameraFailureMessage(error));
     }
-  }, [checkArSupport]);
-
-  const markLookCameraReady = useCallback(() => {
-    if (!lookStreamRef.current || !lookVideoRef.current) {
-      return;
-    }
-
-    setCameraStatus("ready");
-    setLookModeMessage("3D Throw + Gyro");
-  }, []);
-
-  const markLookCameraError = useCallback(() => {
-    setCameraStatus("error");
-    setLookModeMessage("Camera video could not play");
-  }, []);
+  }, [checkArSupport, markLookCameraReady]);
 
   useEffect(() => {
-    if (lookMode !== "camera" || !lookVideoRef.current || !lookStreamRef.current) {
+    if (lookMode !== "camera" || !attachLookVideoStream()) {
       return;
     }
 
     const video = lookVideoRef.current;
 
-    if (video.srcObject !== lookStreamRef.current) {
-      video.srcObject = lookStreamRef.current;
+    if (!video) {
+      return;
     }
 
     void video
       .play()
       .then(() => {
-        if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+        if (lookStreamRef.current?.active || video.readyState >= HTMLMediaElement.HAVE_METADATA) {
           markLookCameraReady();
         }
       })
@@ -1259,7 +1283,7 @@ export default function App() {
         setCameraStatus("error");
         setLookModeMessage("Tap again or use HTTPS for camera");
       });
-  }, [lookMode, markLookCameraReady]);
+  }, [attachLookVideoStream, lookMode, markLookCameraReady]);
 
   useEffect(() => {
     if (!lookMode) {
@@ -1480,6 +1504,7 @@ export default function App() {
             autoPlay
             playsInline
             muted
+            onLoadedMetadata={markLookCameraReady}
             onLoadedData={markLookCameraReady}
             onCanPlay={markLookCameraReady}
             onPlaying={markLookCameraReady}
