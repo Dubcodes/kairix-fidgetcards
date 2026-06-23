@@ -1263,6 +1263,36 @@ export default function App() {
     setLookModeMessage("Camera video could not play");
   }, []);
 
+  const resumeLookVideo = useCallback(() => {
+    if (lookMode !== "camera" || !attachLookVideoStream()) {
+      return;
+    }
+
+    const video = lookVideoRef.current;
+
+    if (!video) {
+      return;
+    }
+
+    setCameraDebug(getCameraDebug(lookStreamRef.current, video));
+
+    if (isCameraStreamUsable(lookStreamRef.current)) {
+      markLookCameraReady();
+    }
+
+    void video
+      .play()
+      .then(() => {
+        setCameraDebug(getCameraDebug(lookStreamRef.current, video));
+        if (isCameraStreamUsable(lookStreamRef.current) || video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+          markLookCameraReady();
+        }
+      })
+      .catch(() => {
+        setCameraDebug(getCameraDebug(lookStreamRef.current, video));
+      });
+  }, [attachLookVideoStream, lookMode, markLookCameraReady]);
+
   const enterLookThrowMode = useCallback(async () => {
     setLookModeMessage("Starting camera...");
     setCameraStatus("starting");
@@ -1312,34 +1342,29 @@ export default function App() {
   }, [checkArSupport, markLookCameraReady]);
 
   useEffect(() => {
-    if (lookMode !== "camera" || !attachLookVideoStream()) {
-      return;
+    resumeLookVideo();
+  }, [resumeLookVideo]);
+
+  useEffect(() => {
+    if (lookMode !== "camera") {
+      return undefined;
     }
 
-    const video = lookVideoRef.current;
+    const handleResume = () => {
+      window.setTimeout(resumeLookVideo, 80);
+      window.setTimeout(resumeLookVideo, 420);
+    };
 
-    if (!video) {
-      return;
-    }
+    document.addEventListener("visibilitychange", handleResume);
+    window.addEventListener("focus", handleResume);
+    window.addEventListener("pageshow", handleResume);
 
-    if (isCameraStreamUsable(lookStreamRef.current)) {
-      markLookCameraReady();
-    }
-
-    void video
-      .play()
-      .then(() => {
-        setCameraDebug(getCameraDebug(lookStreamRef.current, video));
-        if (isCameraStreamUsable(lookStreamRef.current) || video.readyState >= HTMLMediaElement.HAVE_METADATA) {
-          markLookCameraReady();
-        }
-      })
-      .catch(() => {
-        setCameraDebug(getCameraDebug(lookStreamRef.current, video));
-        setCameraStatus("error");
-        setLookModeMessage("Tap again or use HTTPS for camera");
-      });
-  }, [attachLookVideoStream, lookMode, markLookCameraReady]);
+    return () => {
+      document.removeEventListener("visibilitychange", handleResume);
+      window.removeEventListener("focus", handleResume);
+      window.removeEventListener("pageshow", handleResume);
+    };
+  }, [lookMode, resumeLookVideo]);
 
   useEffect(() => {
     if (!lookMode) {
