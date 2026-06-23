@@ -25,7 +25,8 @@ type Card = {
 
 type TextureKind = "none" | "dots" | "grid" | "waves" | "stars" | "checker";
 type FinishKind = "none" | "gloss" | "neon" | "foil";
-type LookModeKind = "camera" | "xr";
+type LookModeKind = "camera";
+type CameraStatus = "idle" | "starting" | "ready" | "blocked" | "error";
 
 type CardVisuals = {
   isGradient: boolean;
@@ -77,12 +78,6 @@ type GyroAim = {
   y: number;
   rotateX: number;
   rotateY: number;
-};
-
-type XrSessionLike = {
-  end: () => Promise<void>;
-  addEventListener: (type: "end", listener: () => void) => void;
-  removeEventListener?: (type: "end", listener: () => void) => void;
 };
 
 type Point = {
@@ -798,6 +793,28 @@ function vibrate() {
   }
 }
 
+function cameraFailureMessage(error?: unknown) {
+  if (!window.isSecureContext) {
+    return "Camera needs HTTPS or localhost";
+  }
+
+  if (!navigator.mediaDevices?.getUserMedia) {
+    return "Camera is not available in this browser";
+  }
+
+  if (error instanceof DOMException) {
+    if (error.name === "NotAllowedError" || error.name === "SecurityError") {
+      return "Camera permission blocked";
+    }
+
+    if (error.name === "NotFoundError" || error.name === "OverconstrainedError") {
+      return "No camera found";
+    }
+  }
+
+  return "Camera could not start";
+}
+
 function getExitDistance(unitX: number, unitY: number, startX: number, startY: number) {
   const stage = document.querySelector<HTMLElement>(".lookCardStage") ?? document.querySelector<HTMLElement>(".stage");
   const stageRect = stage?.getBoundingClientRect();
@@ -842,6 +859,7 @@ export default function App() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [lookMode, setLookMode] = useState<LookModeKind | null>(null);
   const [lookModeMessage, setLookModeMessage] = useState("");
+  const [cameraStatus, setCameraStatus] = useState<CameraStatus>("idle");
   const [gyroAim, setGyroAim] = useState<GyroAim>({ x: 0, y: 0, rotateX: 0, rotateY: 0 });
   const [lookCardAngle, setLookCardAngle] = useState(DEFAULT_LOOK_CARD_ANGLE);
   const [lookCalibrationOpen, setLookCalibrationOpen] = useState(false);
@@ -854,13 +872,13 @@ export default function App() {
   const eyeLongPressed = useRef(false);
   const lookVideoRef = useRef<HTMLVideoElement | null>(null);
   const lookStreamRef = useRef<MediaStream | null>(null);
-  const xrSessionRef = useRef<XrSessionLike | null>(null);
   const gyroAimRef = useRef<GyroAim>({ x: 0, y: 0, rotateX: 0, rotateY: 0 });
   const controls = useAnimationControls();
   const x = useMotionValue(0);
   const y = useMotionValue(0);
   const rotate = useMotionValue(0);
   const topCard = cards[cards.length - 1];
+  const isLookCameraReady = lookMode === "camera" && cameraStatus === "ready";
 
   const theme = useMemo(
     () => ({
@@ -1019,14 +1037,22 @@ export default function App() {
   const stopLookMode = useCallback(() => {
     lookStreamRef.current?.getTracks().forEach((track) => track.stop());
     lookStreamRef.current = null;
-    void xrSessionRef.current?.end().catch(() => undefined);
-    xrSessionRef.current = null;
     setLookMode(null);
     setLookModeMessage("");
+    setCameraStatus("idle");
+    setLookCalibrationOpen(false);
   }, []);
 
   const enterLookThrowMode = useCallback(async () => {
     setLookModeMessage("Starting camera...");
+    setCameraStatus("starting");
+
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+      setLookMode("camera");
+      setCameraStatus("blocked");
+      setLookModeMessage(cameraFailureMessage());
+      return;
+    }
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -1040,53 +1066,51 @@ export default function App() {
 
       lookStreamRef.current = stream;
       setLookMode("camera");
-      setLookModeMessage("Camera Throw + Gyro");
-    } catch {
-      const xr = (
-        navigator as Navigator & {
-          xr?: {
-            isSessionSupported?: (mode: "immersive-ar") => Promise<boolean>;
-            requestSession?: (mode: "immersive-ar", options?: unknown) => Promise<XrSessionLike>;
-          };
-        }
-      ).xr;
-
-      try {
-        const supportsAr = Boolean(await xr?.isSessionSupported?.("immersive-ar"));
-
-        if (supportsAr && xr?.requestSession) {
-          const session = await xr.requestSession("immersive-ar", {
-            optionalFeatures: ["dom-overlay", "local-floor", "unbounded"],
-            domOverlay: { root: document.body },
-          });
-          const handleEnd = () => {
-            xrSessionRef.current = null;
-            setLookMode(null);
-            setLookModeMessage("");
-          };
-
-          session.addEventListener("end", handleEnd);
-          xrSessionRef.current = session;
-          setLookMode("xr");
-          setLookModeMessage("AR Throw");
-          return;
-        }
-      } catch {
-        // Fall through to the blocked state below.
-      }
-
-      setLookMode(null);
-      setLookModeMessage("Camera blocked");
-      window.setTimeout(() => setLookModeMessage(""), 1800);
+      setLookModeMessage("Waiting for camera...");
+    } catch (error) {
+      setLookMode("camera");
+      setCameraStatus(error instanceof DOMException && error.name === "NotAllowedError" ? "blocked" : "error");
+      setLookModeMessage(cameraFailureMessage(error));
     }
   }, []);
 
-  useEffect(() => {
-    if (lookVideoRef.current && lookStreamRef.current) {
-      lookVideoRef.current.srcObject = lookStreamRef.current;
-      void lookVideoRef.current.play().catch(() => undefined);
+  const markLookCameraReady = useCallback(() => {
+    if (!lookStreamRef.current || !lookVideoRef.current) {
+      return;
     }
-  }, [lookMode]);
+
+    setCameraStatus("ready");
+    setLookModeMessage("Camera Throw + Gyro");
+  }, []);
+
+  const markLookCameraError = useCallback(() => {
+    setCameraStatus("error");
+    setLookModeMessage("Camera video could not play");
+  }, []);
+
+  useEffect(() => {
+    if (lookMode !== "camera" || !lookVideoRef.current || !lookStreamRef.current) {
+      return;
+    }
+
+    const video = lookVideoRef.current;
+
+    if (video.srcObject !== lookStreamRef.current) {
+      video.srcObject = lookStreamRef.current;
+    }
+
+    void video
+      .play()
+      .then(() => {
+        if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+          markLookCameraReady();
+        }
+      })
+      .catch(() => {
+        setCameraStatus("error");
+        setLookModeMessage("Tap again or use HTTPS for camera");
+      });
+  }, [lookMode, markLookCameraReady]);
 
   useEffect(() => {
     if (!lookMode) {
@@ -1116,7 +1140,6 @@ export default function App() {
   useEffect(() => {
     return () => {
       lookStreamRef.current?.getTracks().forEach((track) => track.stop());
-      void xrSessionRef.current?.end().catch(() => undefined);
     };
   }, []);
 
@@ -1165,6 +1188,17 @@ export default function App() {
       }
 
       const key = event.key.toLowerCase();
+
+      if (key === "escape" && lookMode) {
+        event.preventDefault();
+        stopLookMode();
+        return;
+      }
+
+      if (lookMode && cameraStatus !== "ready") {
+        return;
+      }
+
       const throws: Record<string, [number, number]> = {
         arrowleft: [-KEYBOARD_THROW_VELOCITY, 0],
         a: [-KEYBOARD_THROW_VELOCITY, 0],
@@ -1210,7 +1244,7 @@ export default function App() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [throwFromInput]);
+  }, [cameraStatus, lookMode, stopLookMode, throwFromInput]);
 
   function resetCounter() {
     thrownRef.current = 0;
@@ -1235,7 +1269,7 @@ export default function App() {
           aria-label={lookMode ? "Exit camera throw mode" : showControls ? "Hide controls" : "Show controls"}
           title={lookMode ? "Exit camera throw mode" : showControls ? "Hide controls (C), hold for camera throw" : "Show controls (C), hold for camera throw"}
         >
-          {showControls ? <EyeOff size={17} strokeWidth={2.4} /> : <Eye size={17} strokeWidth={2.4} />}
+          {lookMode || !showControls ? <Eye size={17} strokeWidth={2.4} /> : <EyeOff size={17} strokeWidth={2.4} />}
         </button>
         {showControls ? (
           <div className="counter" aria-live="polite">
@@ -1266,138 +1300,158 @@ export default function App() {
       </div>
 
       {lookMode ? (
-        <section className={`lookMode lookMode-${lookMode}`} aria-label="Camera throw mode">
-          {lookMode === "camera" ? <video ref={lookVideoRef} className="lookVideo" autoPlay playsInline muted /> : null}
+        <section className={`lookMode lookMode-${lookMode} camera-${cameraStatus}`} aria-label="Camera throw mode">
+          <video
+            ref={lookVideoRef}
+            className="lookVideo"
+            autoPlay
+            playsInline
+            muted
+            onLoadedData={markLookCameraReady}
+            onCanPlay={markLookCameraReady}
+            onPlaying={markLookCameraReady}
+            onError={markLookCameraError}
+          />
           <div className="lookBackdrop" />
-          <div className="lookReticle" aria-hidden="true" />
+          {isLookCameraReady ? <div className="lookReticle" aria-hidden="true" /> : null}
           <div className="lookModeLabel">{lookModeMessage}</div>
-          <div className={`lookCalibration${lookCalibrationOpen ? " open" : ""}`}>
-            <button
-              className="lookCalibrationTab"
-              type="button"
-              onClick={() => setLookCalibrationOpen((value) => !value)}
-              aria-label={lookCalibrationOpen ? "Hide card angle controls" : "Show card angle controls"}
-              title="Card angle"
-            />
-            <label className="lookCalibrationPanel">
-              <span>Angle</span>
-              <input
-                type="range"
-                min="-12"
-                max="56"
-                step="1"
-                value={lookCardAngle}
-                onChange={(event) => setLookCardAngle(Number(event.currentTarget.value))}
-                aria-label="Adjust card angle"
-              />
-              <button
-                className="lookCalibrationReset"
-                type="button"
-                onClick={() => setLookCardAngle(DEFAULT_LOOK_CARD_ANGLE)}
-                aria-label="Reset card angle"
-                title="Reset angle"
+          {!isLookCameraReady ? (
+            <div className="lookCameraNotice" role="status" aria-live="polite">
+              <strong>{lookModeMessage}</strong>
+              <span>Exit with the eye button.</span>
+            </div>
+          ) : null}
+          {isLookCameraReady ? (
+            <>
+              <div className={`lookCalibration${lookCalibrationOpen ? " open" : ""}`}>
+                <button
+                  className="lookCalibrationTab"
+                  type="button"
+                  onClick={() => setLookCalibrationOpen((value) => !value)}
+                  aria-label={lookCalibrationOpen ? "Hide card angle controls" : "Show card angle controls"}
+                  title="Card angle"
+                />
+                <label className="lookCalibrationPanel">
+                  <span>Angle</span>
+                  <input
+                    type="range"
+                    min="-12"
+                    max="56"
+                    step="1"
+                    value={lookCardAngle}
+                    onChange={(event) => setLookCardAngle(Number(event.currentTarget.value))}
+                    aria-label="Adjust card angle"
+                  />
+                  <button
+                    className="lookCalibrationReset"
+                    type="button"
+                    onClick={() => setLookCardAngle(DEFAULT_LOOK_CARD_ANGLE)}
+                    aria-label="Reset card angle"
+                    title="Reset angle"
+                  >
+                    <RotateCcw size={14} strokeWidth={2.4} />
+                  </button>
+                </label>
+              </div>
+              <div
+                className="lookCardStage"
+                style={
+                  {
+                    "--look-aim-x": `${gyroAim.x}px`,
+                    "--look-aim-y": `${gyroAim.y}px`,
+                    "--look-tilt-x": `${gyroAim.rotateX}deg`,
+                    "--look-tilt-y": `${gyroAim.rotateY}deg`,
+                  } as CSSProperties
+                }
               >
-                <RotateCcw size={14} strokeWidth={2.4} />
-              </button>
-            </label>
-          </div>
-          <div
-            className="lookCardStage"
-            style={
-              {
-                "--look-aim-x": `${gyroAim.x}px`,
-                "--look-aim-y": `${gyroAim.y}px`,
-                "--look-tilt-x": `${gyroAim.rotateX}deg`,
-                "--look-tilt-y": `${gyroAim.rotateY}deg`,
-              } as CSSProperties
-            }
-          >
-            {cards.slice(0, -1).map((card, index) => {
-              const depth = cards.length - 1 - index;
+                {cards.slice(0, -1).map((card, index) => {
+                  const depth = cards.length - 1 - index;
 
-              return (
-                <div
-                  key={`look-stack-${card.id}`}
-                  className="card lookStackCard"
+                  return (
+                    <div
+                      key={`look-stack-${card.id}`}
+                      className="card lookStackCard"
+                      style={{
+                        background: cardBackground(card, card.isGradient),
+                        borderColor: colorToCss(card.color, 12, -18),
+                        boxShadow: "0 20px 60px rgba(0, 0, 0, 0.24), 0 1px 0 rgba(255, 255, 255, 0.22) inset",
+                        transform: `translate3d(${depth * 8}px, ${depth * 12}px, ${-depth * 34}px) rotateX(${
+                          lookCardAngle * 0.8
+                        }deg) rotate(${depth * -1.4}deg) scale(${1 - depth * 0.04})`,
+                        zIndex: 4 - depth,
+                      } as CSSProperties}
+                      aria-hidden="true"
+                    >
+                      <CardFace card={card} />
+                    </div>
+                  );
+                })}
+
+                <motion.div
+                  key={`look-${topCard.id}`}
+                  className="card lookCard"
+                  drag
+                  dragMomentum={false}
+                  dragElastic={0.12}
+                  onPointerDown={captureGrabPoint}
+                  onDrag={(_, info) => rotateDuringDrag(info)}
+                  onDragEnd={(_, info) => throwCard(info)}
+                  animate={controls}
+                  transition={{ type: "spring", stiffness: 360, damping: 32, mass: 0.75 }}
                   style={{
-                    background: cardBackground(card, card.isGradient),
-                    borderColor: colorToCss(card.color, 12, -18),
-                    boxShadow: "0 20px 60px rgba(0, 0, 0, 0.24), 0 1px 0 rgba(255, 255, 255, 0.22) inset",
-                    transform: `translate3d(${depth * 8}px, ${depth * 12}px, ${-depth * 34}px) rotateX(${
-                      lookCardAngle * 0.8
-                    }deg) rotate(${depth * -1.4}deg) scale(${1 - depth * 0.04})`,
-                    zIndex: 4 - depth,
-                  } as CSSProperties}
-                  aria-hidden="true"
+                    x,
+                    y,
+                    rotate,
+                    rotateX: lookCardAngle,
+                    background: cardBackground(topCard, topCard.isGradient),
+                    borderColor: colorToCss(topCard.color, 12, -18),
+                    boxShadow: "0 34px 90px rgba(0, 0, 0, 0.32), 0 1px 0 rgba(255, 255, 255, 0.3) inset",
+                    scale: 1,
+                  }}
+                  whileTap={{ scale: 0.985, cursor: "grabbing" }}
                 >
-                  <CardFace card={card} />
-                </div>
-              );
-            })}
+                  <CardFace card={topCard} />
+                </motion.div>
 
-            <motion.div
-              key={`look-${topCard.id}`}
-              className="card lookCard"
-              drag
-              dragMomentum={false}
-              dragElastic={0.12}
-              onPointerDown={captureGrabPoint}
-              onDrag={(_, info) => rotateDuringDrag(info)}
-              onDragEnd={(_, info) => throwCard(info)}
-              animate={controls}
-              transition={{ type: "spring", stiffness: 360, damping: 32, mass: 0.75 }}
-              style={{
-                x,
-                y,
-                rotate,
-                rotateX: lookCardAngle,
-                background: cardBackground(topCard, topCard.isGradient),
-                borderColor: colorToCss(topCard.color, 12, -18),
-                boxShadow: "0 34px 90px rgba(0, 0, 0, 0.32), 0 1px 0 rgba(255, 255, 255, 0.3) inset",
-                scale: 1,
-              }}
-              whileTap={{ scale: 0.985, cursor: "grabbing" }}
-            >
-              <CardFace card={topCard} />
-            </motion.div>
-
-            {flyingCards.map((card) => (
-              <motion.div
-                key={`look-flight-${card.flightId}`}
-                className="card flyingCard lookFlyingCard"
-                initial={{
-                  x: card.startX,
-                  y: card.startY,
-                  rotate: card.startRotate,
-                  rotateX: card.startRotateX,
-                  rotateY: 0,
-                  scale: 1,
-                  opacity: 1,
-                }}
-                animate={{
-                  x: card.targetX,
-                  y: card.targetY,
-                  rotate: card.targetRotate,
-                  rotateX: card.targetRotateX,
-                  rotateY: card.targetRotateY,
-                  scale: [1, card.targetScale, card.targetScale * 0.82],
-                  opacity: [1, 1, 0.98],
-                }}
-                transition={{
-                  duration: card.duration,
-                  ease: "linear",
-                  times: [0, 0.72, 1],
-                }}
-                style={{
-                  background: cardBackground(card, card.isGradient),
-                  borderColor: colorToCss(card.color, 12, -18),
-                  boxShadow: "0 28px 80px rgba(0, 0, 0, 0.28), 0 1px 0 rgba(255, 255, 255, 0.3) inset",
-                }}
-              >
-                <CardFace card={card} />
-              </motion.div>
-            ))}
-          </div>
+                {flyingCards.map((card) => (
+                  <motion.div
+                    key={`look-flight-${card.flightId}`}
+                    className="card flyingCard lookFlyingCard"
+                    initial={{
+                      x: card.startX,
+                      y: card.startY,
+                      rotate: card.startRotate,
+                      rotateX: card.startRotateX,
+                      rotateY: 0,
+                      scale: 1,
+                      opacity: 1,
+                    }}
+                    animate={{
+                      x: card.targetX,
+                      y: card.targetY,
+                      rotate: card.targetRotate,
+                      rotateX: card.targetRotateX,
+                      rotateY: card.targetRotateY,
+                      scale: [1, card.targetScale, card.targetScale * 0.82],
+                      opacity: [1, 1, 0.98],
+                    }}
+                    transition={{
+                      duration: card.duration,
+                      ease: "linear",
+                      times: [0, 0.72, 1],
+                    }}
+                    style={{
+                      background: cardBackground(card, card.isGradient),
+                      borderColor: colorToCss(card.color, 12, -18),
+                      boxShadow: "0 28px 80px rgba(0, 0, 0, 0.28), 0 1px 0 rgba(255, 255, 255, 0.3) inset",
+                    }}
+                  >
+                    <CardFace card={card} />
+                  </motion.div>
+                ))}
+              </div>
+            </>
+          ) : null}
         </section>
       ) : null}
 
