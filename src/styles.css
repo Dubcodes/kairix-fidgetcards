@@ -189,6 +189,10 @@ button {
   will-change: transform;
 }
 
+.lookMode .card {
+  opacity: 0;
+}
+
 .lookMode .cardLines,
 .lookMode .cardTexture,
 .lookMode .cardFinish,

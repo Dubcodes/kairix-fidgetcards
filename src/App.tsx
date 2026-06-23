@@ -111,8 +111,55 @@ type XrFrameLike = {
   getViewerPose?: (referenceSpace: unknown) => { views: unknown[] } | null;
 };
 
+type XrMatrixLike = {
+  matrix: Float32Array;
+};
+
+type XrViewLike = {
+  projectionMatrix: Float32Array;
+  transform?: {
+    matrix?: Float32Array;
+    inverse?: XrMatrixLike;
+  };
+};
+
+type XrViewerPoseLike = {
+  transform?: {
+    matrix?: Float32Array;
+  };
+  views: XrViewLike[];
+};
+
+type Vec3 = {
+  x: number;
+  y: number;
+  z: number;
+};
+
+type XrCameraBasis = {
+  position: Vec3;
+  right: Vec3;
+  up: Vec3;
+  forward: Vec3;
+};
+
+type XrThrowGesture = {
+  unitX: number;
+  unitY: number;
+  throwSpeed: number;
+  spin: number;
+  startX: number;
+  startY: number;
+};
+
+type XrSceneController = {
+  setActiveCard: (card: StackCard) => void;
+  throwCard: (card: StackCard, gesture: XrThrowGesture) => void;
+};
+
 type PreparedXrSession = {
   canvas: HTMLCanvasElement;
+  scene: XrSceneController;
   stop: () => void;
 };
 
@@ -853,6 +900,177 @@ function arFailureMessage(error?: unknown) {
   return "AR could not start";
 }
 
+function vecAdd(a: Vec3, b: Vec3): Vec3 {
+  return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };
+}
+
+function vecScale(vector: Vec3, scale: number): Vec3 {
+  return { x: vector.x * scale, y: vector.y * scale, z: vector.z * scale };
+}
+
+function hslToRgb(color: CardColor) {
+  const saturation = color.saturation / 100;
+  const lightness = color.lightness / 100;
+  const chroma = (1 - Math.abs(2 * lightness - 1)) * saturation;
+  const huePrime = color.hue / 60;
+  const secondary = chroma * (1 - Math.abs((huePrime % 2) - 1));
+  const match = lightness - chroma / 2;
+  let red = 0;
+  let green = 0;
+  let blue = 0;
+
+  if (huePrime < 1) {
+    red = chroma;
+    green = secondary;
+  } else if (huePrime < 2) {
+    red = secondary;
+    green = chroma;
+  } else if (huePrime < 3) {
+    green = chroma;
+    blue = secondary;
+  } else if (huePrime < 4) {
+    green = secondary;
+    blue = chroma;
+  } else if (huePrime < 5) {
+    red = secondary;
+    blue = chroma;
+  } else {
+    red = chroma;
+    blue = secondary;
+  }
+
+  return [red + match, green + match, blue + match] as const;
+}
+
+function multiplyMatrix4(a: Float32Array, b: Float32Array) {
+  const out = new Float32Array(16);
+
+  for (let column = 0; column < 4; column += 1) {
+    for (let row = 0; row < 4; row += 1) {
+      out[column * 4 + row] =
+        a[0 * 4 + row] * b[column * 4 + 0] +
+        a[1 * 4 + row] * b[column * 4 + 1] +
+        a[2 * 4 + row] * b[column * 4 + 2] +
+        a[3 * 4 + row] * b[column * 4 + 3];
+    }
+  }
+
+  return out;
+}
+
+function cameraBasisFromMatrix(matrix: Float32Array): XrCameraBasis {
+  return {
+    position: { x: matrix[12], y: matrix[13], z: matrix[14] },
+    right: { x: matrix[0], y: matrix[1], z: matrix[2] },
+    up: { x: matrix[4], y: matrix[5], z: matrix[6] },
+    forward: { x: -matrix[8], y: -matrix[9], z: -matrix[10] },
+  };
+}
+
+function cardModelMatrix(position: Vec3, right: Vec3, up: Vec3, forward: Vec3, width: number, height: number, spin: number) {
+  const cos = Math.cos(spin);
+  const sin = Math.sin(spin);
+  const xAxis = vecAdd(vecScale(right, cos), vecScale(up, sin));
+  const yAxis = vecAdd(vecScale(right, -sin), vecScale(up, cos));
+  const matrix = new Float32Array(16);
+
+  matrix[0] = xAxis.x * width;
+  matrix[1] = xAxis.y * width;
+  matrix[2] = xAxis.z * width;
+  matrix[4] = yAxis.x * height;
+  matrix[5] = yAxis.y * height;
+  matrix[6] = yAxis.z * height;
+  matrix[8] = forward.x * 0.02;
+  matrix[9] = forward.y * 0.02;
+  matrix[10] = forward.z * 0.02;
+  matrix[12] = position.x;
+  matrix[13] = position.y;
+  matrix[14] = position.z;
+  matrix[15] = 1;
+
+  return matrix;
+}
+
+function compileShader(gl: WebGLRenderingContext, type: number, source: string) {
+  const shader = gl.createShader(type);
+
+  if (!shader) {
+    throw new Error("Shader unavailable");
+  }
+
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    const message = gl.getShaderInfoLog(shader) ?? "Shader compile failed";
+    gl.deleteShader(shader);
+    throw new Error(message);
+  }
+
+  return shader;
+}
+
+function createXrCardRenderer(gl: WebGLRenderingContext) {
+  const vertexShader = compileShader(
+    gl,
+    gl.VERTEX_SHADER,
+    `
+      attribute vec3 aPosition;
+      uniform mat4 uMvp;
+
+      void main() {
+        gl_Position = uMvp * vec4(aPosition, 1.0);
+      }
+    `,
+  );
+  const fragmentShader = compileShader(
+    gl,
+    gl.FRAGMENT_SHADER,
+    `
+      precision mediump float;
+      uniform vec4 uColor;
+
+      void main() {
+        gl_FragColor = uColor;
+      }
+    `,
+  );
+  const program = gl.createProgram();
+
+  if (!program) {
+    throw new Error("WebGL program unavailable");
+  }
+
+  gl.attachShader(program, vertexShader);
+  gl.attachShader(program, fragmentShader);
+  gl.linkProgram(program);
+
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    throw new Error(gl.getProgramInfoLog(program) ?? "WebGL program link failed");
+  }
+
+  const vertexBuffer = gl.createBuffer();
+
+  if (!vertexBuffer) {
+    throw new Error("WebGL buffer unavailable");
+  }
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+  gl.bufferData(
+    gl.ARRAY_BUFFER,
+    new Float32Array([-0.5, -0.7, 0, 0.5, -0.7, 0, -0.5, 0.7, 0, 0.5, 0.7, 0]),
+    gl.STATIC_DRAW,
+  );
+
+  return {
+    program,
+    positionLocation: gl.getAttribLocation(program, "aPosition"),
+    mvpLocation: gl.getUniformLocation(program, "uMvp"),
+    colorLocation: gl.getUniformLocation(program, "uColor"),
+    vertexBuffer,
+  };
+}
+
 async function prepareXrSession(session: XrSessionLike): Promise<PreparedXrSession> {
   const canvas = document.createElement("canvas");
   canvas.className = "xrRenderCanvas";
@@ -883,7 +1101,11 @@ async function prepareXrSession(session: XrSessionLike): Promise<PreparedXrSessi
   await gl.makeXRCompatible?.();
 
   const XRWebGLLayerCtor = (window as unknown as {
-    XRWebGLLayer?: new (session: XrSessionLike, context: WebGLRenderingContext) => XrWebGlLayerLike;
+    XRWebGLLayer?: new (
+      session: XrSessionLike,
+      context: WebGLRenderingContext,
+      options?: { alpha?: boolean; antialias?: boolean; depth?: boolean },
+    ) => XrWebGlLayerLike;
   }).XRWebGLLayer;
 
   if (!XRWebGLLayerCtor || !session.updateRenderState || !session.requestAnimationFrame) {
@@ -892,11 +1114,96 @@ async function prepareXrSession(session: XrSessionLike): Promise<PreparedXrSessi
 
   window.addEventListener("resize", resizeCanvas);
   document.body.appendChild(canvas);
-  const baseLayer = new XRWebGLLayerCtor(session, gl);
+  const baseLayer = new XRWebGLLayerCtor(session, gl, { alpha: true, antialias: false, depth: true });
   session.updateRenderState({ baseLayer });
   const referenceSpace = await session.requestReferenceSpace?.("local-floor").catch(() => session.requestReferenceSpace?.("local"));
+  const renderer = createXrCardRenderer(gl);
+  const thrownCards: Array<{
+    card: StackCard;
+    position: Vec3;
+    velocity: Vec3;
+    right: Vec3;
+    up: Vec3;
+    forward: Vec3;
+    spin: number;
+    spinVelocity: number;
+    age: number;
+  }> = [];
+  let activeCard: StackCard | null = null;
+  let lastCamera: XrCameraBasis = {
+    position: { x: 0, y: 1.45, z: 0 },
+    right: { x: 1, y: 0, z: 0 },
+    up: { x: 0, y: 1, z: 0 },
+    forward: { x: 0, y: 0, z: -1 },
+  };
+  let lastFrameTime = 0;
   let running = true;
   let frameHandle: number | null = null;
+
+  const scene: XrSceneController = {
+    setActiveCard: (card) => {
+      activeCard = card;
+    },
+    throwCard: (card, gesture) => {
+      const offsetRight = clamp(gesture.startX / 620, -0.42, 0.42);
+      const offsetUp = clamp(-gesture.startY / 620, -0.52, 0.52);
+      const speed = clamp(gesture.throwSpeed / 900, 0.45, 5.4);
+      const lateral = speed * 0.24;
+      const lift = speed * 0.08;
+
+      thrownCards.push({
+        card,
+        position: vecAdd(
+          vecAdd(vecAdd(lastCamera.position, vecScale(lastCamera.forward, 0.9)), vecScale(lastCamera.right, offsetRight)),
+          vecScale(lastCamera.up, offsetUp - 0.06),
+        ),
+        velocity: vecAdd(
+          vecAdd(vecScale(lastCamera.forward, speed), vecScale(lastCamera.right, gesture.unitX * lateral)),
+          vecScale(lastCamera.up, -gesture.unitY * lift),
+        ),
+        right: lastCamera.right,
+        up: lastCamera.up,
+        forward: lastCamera.forward,
+        spin: 0,
+        spinVelocity: clamp(gesture.spin / 36, -3.8, 3.8),
+        age: 0,
+      });
+
+      if (thrownCards.length > MAX_LOOK_FLYING_CARDS) {
+        thrownCards.splice(0, thrownCards.length - MAX_LOOK_FLYING_CARDS);
+      }
+    },
+  };
+
+  const drawCard = (card: StackCard, modelMatrix: Float32Array, viewProjection: Float32Array, alpha = 0.96) => {
+    const mvp = multiplyMatrix4(viewProjection, modelMatrix);
+    const [red, green, blue] = hslToRgb(card.color);
+
+    gl.useProgram(renderer.program);
+    gl.bindBuffer(gl.ARRAY_BUFFER, renderer.vertexBuffer);
+    gl.enableVertexAttribArray(renderer.positionLocation);
+    gl.vertexAttribPointer(renderer.positionLocation, 3, gl.FLOAT, false, 0, 0);
+    gl.uniformMatrix4fv(renderer.mvpLocation, false, mvp);
+    gl.uniform4f(renderer.colorLocation, red, green, blue, alpha);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  };
+
+  const updateThrownCards = (deltaSeconds: number) => {
+    for (const card of thrownCards) {
+      card.age += deltaSeconds;
+      card.velocity.y -= 0.42 * deltaSeconds;
+      card.position = vecAdd(card.position, vecScale(card.velocity, deltaSeconds));
+      card.spin += card.spinVelocity * deltaSeconds;
+    }
+
+    for (let index = thrownCards.length - 1; index >= 0; index -= 1) {
+      const card = thrownCards[index];
+
+      if (card.age > 9 || Math.hypot(card.position.x - lastCamera.position.x, card.position.y - lastCamera.position.y, card.position.z - lastCamera.position.z) > 14) {
+        thrownCards.splice(index, 1);
+      }
+    }
+  };
 
   const drawFrame = (_time: number, frame: unknown) => {
     if (!running) {
@@ -909,16 +1216,53 @@ async function prepareXrSession(session: XrSessionLike): Promise<PreparedXrSessi
     gl.clearColor(0, 0, 0, 0);
     gl.clearDepth(1);
     gl.enable(gl.DEPTH_TEST);
+    gl.disable(gl.CULL_FACE);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-    const pose = referenceSpace ? (frame as XrFrameLike).getViewerPose?.(referenceSpace) : null;
+    const pose = (referenceSpace ? (frame as XrFrameLike).getViewerPose?.(referenceSpace) : null) as XrViewerPoseLike | null;
 
     if (pose?.views.length && layer.getViewport) {
+      const poseMatrix = pose.transform?.matrix ?? pose.views[0]?.transform?.matrix;
+
+      if (poseMatrix) {
+        lastCamera = cameraBasisFromMatrix(poseMatrix);
+      }
+
+      const deltaSeconds = lastFrameTime > 0 ? clamp((_time - lastFrameTime) / 1000, 0.001, 0.05) : 0.016;
+      lastFrameTime = _time;
+      updateThrownCards(deltaSeconds);
+
       for (const view of pose.views) {
         const viewport = layer.getViewport(view);
+        const viewMatrix = view.transform?.inverse?.matrix;
 
-        if (viewport) {
+        if (viewport && viewMatrix) {
           gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
           gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+          const viewProjection = multiplyMatrix4(view.projectionMatrix, viewMatrix);
+
+          for (const thrownCard of thrownCards) {
+            drawCard(
+              thrownCard.card,
+              cardModelMatrix(thrownCard.position, thrownCard.right, thrownCard.up, thrownCard.forward, 0.46, 0.64, thrownCard.spin),
+              viewProjection,
+              clamp(1 - thrownCard.age / 10, 0.24, 0.96),
+            );
+          }
+
+          if (activeCard) {
+            const activePosition = vecAdd(
+              vecAdd(lastCamera.position, vecScale(lastCamera.forward, 0.82)),
+              vecScale(lastCamera.up, -0.08),
+            );
+            drawCard(
+              activeCard,
+              cardModelMatrix(activePosition, lastCamera.right, lastCamera.up, lastCamera.forward, 0.38, 0.54, 0),
+              viewProjection,
+              0.98,
+            );
+          }
         }
       }
 
@@ -933,6 +1277,7 @@ async function prepareXrSession(session: XrSessionLike): Promise<PreparedXrSessi
 
   return {
     canvas,
+    scene,
     stop: () => {
       running = false;
       window.removeEventListener("resize", resizeCanvas);
@@ -1003,6 +1348,8 @@ export default function App() {
   const xrSessionRef = useRef<XrSessionLike | null>(null);
   const xrCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const xrRenderCleanupRef = useRef<(() => void) | null>(null);
+  const xrSceneRef = useRef<XrSceneController | null>(null);
+  const topCardRef = useRef<StackCard | null>(null);
   const controls = useAnimationControls();
   const x = useMotionValue(0);
   const y = useMotionValue(0);
@@ -1010,6 +1357,11 @@ export default function App() {
   const [grabOrigin, setGrabOrigin] = useState("50% 50%");
   const topCard = cards[cards.length - 1];
   const isArReady = lookMode === "ar" && arStatus === "ready";
+
+  useEffect(() => {
+    topCardRef.current = topCard;
+    xrSceneRef.current?.setActiveCard(topCard);
+  }, [topCard]);
 
   const theme = useMemo(
     () => ({
@@ -1079,15 +1431,23 @@ export default function App() {
       thrownRef.current = nextThrown;
       lastThrowAt.current = now;
 
+      if (isLookThrow) {
+        xrSceneRef.current?.throwCard(topCard, { unitX, unitY, throwSpeed, spin, startX, startY });
+      }
+
       flushSync(() => {
         controls.set({ rotate: 0, scale: 1, opacity: 1 });
         x.set(0);
         y.set(0);
         rotate.set(0);
         setFlyingCards((value) => {
+          if (isLookThrow) {
+            return value.filter((card) => card.flightMode !== "look");
+          }
+
           const nextCard: FlyingCard = {
             ...topCard,
-            flightMode: isLookThrow ? "look" : "screen",
+            flightMode: "screen",
             flightId: nextFlightId,
             transformOrigin: currentGrabOrigin,
             startX,
@@ -1107,21 +1467,7 @@ export default function App() {
           };
           const nextCards = [...value, nextCard];
 
-          if (!isLookThrow) {
-            return nextCards;
-          }
-
-          const lookCards = nextCards.filter((card) => card.flightMode === "look");
-
-          if (lookCards.length <= MAX_LOOK_FLYING_CARDS) {
-            return nextCards;
-          }
-
-          const removedFlightIds = new Set(
-            lookCards.slice(0, lookCards.length - MAX_LOOK_FLYING_CARDS).map((card) => card.flightId),
-          );
-
-          return nextCards.filter((card) => !removedFlightIds.has(card.flightId));
+          return nextCards;
         });
         setThrown(nextThrown);
         setCards((value) => nextStack(value, nextThrown));
@@ -1225,6 +1571,7 @@ export default function App() {
     void session?.end().catch(() => undefined);
     xrRenderCleanupRef.current?.();
     xrRenderCleanupRef.current = null;
+    xrSceneRef.current = null;
     xrCanvasRef.current = null;
     setLookMode(null);
     setLookModeMessage("");
@@ -1272,6 +1619,7 @@ export default function App() {
         xrSessionRef.current = null;
         preparedSession.stop();
         xrRenderCleanupRef.current = null;
+        xrSceneRef.current = null;
         xrCanvasRef.current = null;
         setLookMode(null);
         setLookModeMessage("");
@@ -1283,6 +1631,10 @@ export default function App() {
       xrSessionRef.current = session;
       xrCanvasRef.current = preparedSession.canvas;
       xrRenderCleanupRef.current = preparedSession.stop;
+      xrSceneRef.current = preparedSession.scene;
+      if (topCardRef.current) {
+        preparedSession.scene.setActiveCard(topCardRef.current);
+      }
       setLookMode("ar");
       setArStatus("ready");
       setLookModeMessage("AR Throw");
@@ -1293,6 +1645,7 @@ export default function App() {
       xrSessionRef.current = null;
       xrRenderCleanupRef.current?.();
       xrRenderCleanupRef.current = null;
+      xrSceneRef.current = null;
       xrCanvasRef.current = null;
       window.setTimeout(() => setLookModeMessage(""), 3200);
     }
@@ -1302,6 +1655,7 @@ export default function App() {
     return () => {
       void xrSessionRef.current?.end().catch(() => undefined);
       xrRenderCleanupRef.current?.();
+      xrSceneRef.current = null;
     };
   }, []);
 
