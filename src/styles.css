@@ -168,25 +168,13 @@ button {
   pointer-events: none;
 }
 
-.lookCard,
-.lookFlyingCard {
+.lookCard {
   pointer-events: auto;
-  transform-style: preserve-3d;
-}
-
-.lookStackCard {
-  pointer-events: none;
   transform-style: preserve-3d;
 }
 
 .lookCard {
   z-index: 8;
-}
-
-.lookFlyingCard {
-  z-index: 12;
-  pointer-events: none;
-  will-change: transform;
 }
 
 .lookMode .card {
@@ -198,6 +186,20 @@ button {
 .lookMode .cardFinish,
 .lookMode .cardEmoji {
   display: none;
+}
+
+.arDebug {
+  position: fixed;
+  left: max(14px, env(safe-area-inset-left));
+  right: max(14px, env(safe-area-inset-right));
+  bottom: max(58px, calc(env(safe-area-inset-bottom) + 52px));
+  z-index: 64;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 0.68rem;
+  font-weight: 760;
+  text-align: center;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.46);
+  pointer-events: none;
 }
 
 .counter,
