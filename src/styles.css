@@ -104,6 +104,34 @@ button {
   pointer-events: none;
 }
 
+.floorGuide {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.floorGuide::before,
+.floorGuide::after {
+  content: "";
+  position: absolute;
+  left: -10%;
+  width: 120%;
+  transform: rotate(var(--floor-roll, 0deg));
+  transform-origin: center;
+}
+
+.floorGuide::before {
+  top: var(--horizon-y, 42%);
+  border-top: 1px dashed rgba(255, 255, 255, 0.18);
+}
+
+.floorGuide::after {
+  top: var(--floor-y, 76%);
+  border-top: 2px solid rgba(255, 255, 255, 0.28);
+  box-shadow: 0 18px 46px rgba(255, 255, 255, 0.08);
+}
+
 .lookModeLabel {
   position: fixed;
   left: max(14px, env(safe-area-inset-left));
@@ -195,7 +223,7 @@ button {
   display: grid;
   justify-items: center;
   gap: 10px;
-  min-height: 212px;
+  min-height: 254px;
   padding: 14px 12px;
   border: 1px solid rgba(255, 255, 255, 0.28);
   border-left: 0;
@@ -207,6 +235,23 @@ button {
   font-size: 0.72rem;
   font-weight: 850;
   letter-spacing: 0;
+}
+
+.lookDiagnostics {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 0.58rem;
+  font-weight: 760;
+  line-height: 1.12;
+  text-align: center;
+}
+
+.lookDiagnostics span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .lookCalibrationPanel input {
@@ -469,7 +514,7 @@ button {
   }
 
   .lookCalibrationPanel {
-    min-height: 188px;
+    min-height: 232px;
     padding: 12px 10px;
   }
 

@@ -1,5 +1,5 @@
 import { animate, motion, useAnimationControls, useMotionValue, type PanInfo } from "framer-motion";
-import { Eye, EyeOff, Maximize2, Minimize2, RotateCcw } from "lucide-react";
+import { Crosshair, Eye, EyeOff, Maximize2, Minimize2, RotateCcw } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -27,6 +27,7 @@ type TextureKind = "none" | "dots" | "grid" | "waves" | "stars" | "checker";
 type FinishKind = "none" | "gloss" | "neon" | "foil";
 type LookModeKind = "camera";
 type CameraStatus = "idle" | "starting" | "ready" | "blocked" | "error";
+type GyroStatus = "waiting" | "live" | "unavailable";
 
 type CardVisuals = {
   isGradient: boolean;
@@ -85,6 +86,36 @@ type GyroAim = {
   rotateY: number;
 };
 
+type OrientationSample = {
+  alpha: number;
+  beta: number;
+  gamma: number;
+};
+
+type FloorCalibration = {
+  beta: number;
+  gamma: number;
+  isSet: boolean;
+};
+
+type FloorGuide = {
+  horizon: number;
+  floor: number;
+  pitch: number;
+  roll: number;
+};
+
+type ArDiagnostics = {
+  secure: boolean;
+  hasNavigatorXr: boolean;
+  immersiveAr: "unknown" | "supported" | "unsupported" | "error";
+  message: string;
+};
+
+type XrSystemLike = {
+  isSessionSupported?: (mode: "immersive-ar") => Promise<boolean>;
+};
+
 type Point = {
   x: number;
   y: number;
@@ -137,6 +168,12 @@ const EYE_LONG_PRESS_MS = 620;
 const MIN_FLIGHT_DURATION = 0.22;
 const MAX_FLIGHT_DURATION = 3.25;
 const DEFAULT_LOOK_CARD_ANGLE = 42;
+const DEFAULT_FLOOR_GUIDE: FloorGuide = {
+  horizon: 42,
+  floor: 76,
+  pitch: 0,
+  roll: 0,
+};
 const EMOJI_POOL = [
   "✨",
   "🌈",
@@ -820,6 +857,35 @@ function cameraFailureMessage(error?: unknown) {
   return "Camera could not start";
 }
 
+function createArDiagnostics(message = "AR not checked"): ArDiagnostics {
+  return {
+    secure: window.isSecureContext,
+    hasNavigatorXr: Boolean((navigator as Navigator & { xr?: XrSystemLike }).xr),
+    immersiveAr: "unknown",
+    message,
+  };
+}
+
+function createFloorGuide(sample: OrientationSample | null, calibration: FloorCalibration): FloorGuide {
+  if (!sample) {
+    return DEFAULT_FLOOR_GUIDE;
+  }
+
+  const referenceBeta = calibration.isSet ? calibration.beta : 68;
+  const referenceGamma = calibration.isSet ? calibration.gamma : 0;
+  const pitch = clamp(sample.beta - referenceBeta, -70, 70);
+  const roll = clamp(sample.gamma - referenceGamma, -45, 45);
+  const horizon = clamp(42 - pitch * 0.46, 12, 70);
+  const floor = clamp(76 - pitch * 0.34 + Math.abs(roll) * 0.1, 46, 94);
+
+  return {
+    horizon,
+    floor: Math.max(floor, horizon + 18),
+    pitch,
+    roll,
+  };
+}
+
 function getExitDistance(unitX: number, unitY: number, startX: number, startY: number) {
   const stage = document.querySelector<HTMLElement>(".lookCardStage") ?? document.querySelector<HTMLElement>(".stage");
   const stageRect = stage?.getBoundingClientRect();
@@ -866,8 +932,11 @@ export default function App() {
   const [lookModeMessage, setLookModeMessage] = useState("");
   const [cameraStatus, setCameraStatus] = useState<CameraStatus>("idle");
   const [gyroAim, setGyroAim] = useState<GyroAim>({ x: 0, y: 0, rotateX: 0, rotateY: 0 });
+  const [gyroStatus, setGyroStatus] = useState<GyroStatus>("waiting");
+  const [floorGuide, setFloorGuide] = useState<FloorGuide>(DEFAULT_FLOOR_GUIDE);
   const [lookCardAngle, setLookCardAngle] = useState(DEFAULT_LOOK_CARD_ANGLE);
   const [lookCalibrationOpen, setLookCalibrationOpen] = useState(false);
+  const [arDiagnostics, setArDiagnostics] = useState<ArDiagnostics>(() => createArDiagnostics());
   const flightId = useRef(0);
   const particleId = useRef(0);
   const thrownRef = useRef(0);
@@ -878,6 +947,9 @@ export default function App() {
   const lookVideoRef = useRef<HTMLVideoElement | null>(null);
   const lookStreamRef = useRef<MediaStream | null>(null);
   const gyroAimRef = useRef<GyroAim>({ x: 0, y: 0, rotateX: 0, rotateY: 0 });
+  const orientationSampleRef = useRef<OrientationSample | null>(null);
+  const floorCalibrationRef = useRef<FloorCalibration>({ beta: 68, gamma: 0, isSet: false });
+  const floorGuideRef = useRef<FloorGuide>(DEFAULT_FLOOR_GUIDE);
   const controls = useAnimationControls();
   const x = useMotionValue(0);
   const y = useMotionValue(0);
@@ -924,16 +996,20 @@ export default function App() {
       const exitDistance = getExitDistance(unitX, unitY, startX, startY) * speedBoost;
       const angleAmount = clamp((lookCardAngle - 8) / 64, 0, 1);
       const aim = gyroAimRef.current;
+      const floor = floorGuideRef.current;
       const aimX = clamp(aim.x / 58, -1, 1);
       const aimY = clamp(aim.y / 54, -1, 1);
+      const viewportHeight = window.innerHeight || 720;
+      const floorTargetY = (floor.floor / 100 - 0.5) * viewportHeight;
+      const floorPitchBoost = clamp((floor.floor - floor.horizon) / 46, 0.42, 1.2);
       const forwardDistance = isLookThrow
-        ? clamp(throwSpeed * (0.44 + angleAmount * 1.08) + Math.hypot(startX, startY) * 5.4, 520, 5800)
+        ? clamp(throwSpeed * (0.44 + angleAmount * 1.08) * floorPitchBoost + Math.hypot(startX, startY) * 5.4, 520, 6200)
         : 0;
       const lookLateralDistance = clamp(forwardDistance * (0.2 + (1 - angleAmount) * 0.18), 160, 1380);
-      const lookLift = clamp(unitY * lookLateralDistance * 0.48 + aimY * forwardDistance * 0.08, -620, 520);
-      const lookFloorDrop = clamp(angleAmount * forwardDistance * 0.13, 80, 620);
+      const lookLift = clamp(unitY * lookLateralDistance * 0.26 + aimY * forwardDistance * 0.04, -420, 260);
+      const lookFloorDrop = clamp(angleAmount * forwardDistance * 0.08, 40, 360);
       const targetX = isLookThrow ? startX + unitX * lookLateralDistance + aimX * forwardDistance * 0.1 : unitX * exitDistance;
-      const targetY = isLookThrow ? startY + lookLift + lookFloorDrop : unitY * exitDistance;
+      const targetY = isLookThrow ? clamp(floorTargetY + lookLift + lookFloorDrop, -viewportHeight * 0.32, viewportHeight * 0.78) : unitY * exitDistance;
       const targetZ = isLookThrow ? -forwardDistance : 0;
       const pixelsPerSecond = clamp(throwSpeed * (isLookThrow ? 1.05 : 0.92), 260, 4700);
       const duration = isLookThrow
@@ -943,8 +1019,8 @@ export default function App() {
       const startRotateX = isLookThrow ? lookCardAngle : 0;
       const startRotateY = isLookThrow ? clamp(aim.rotateY * 0.35, -10, 10) : 0;
       const pitchLift = clamp((1 - angleAmount) * 32 + Math.max(0, -unitY) * 18, 6, 44);
-      const targetRotateX = isLookThrow ? clamp(lookCardAngle + pitchLift + throwSpeed / 240, 26, 86) : 0;
-      const targetRotateY = isLookThrow ? clamp(startRotateY - unitX * 42 + aimX * 12, -54, 54) : 0;
+      const targetRotateX = isLookThrow ? clamp(74 + floor.pitch * 0.22 + pitchLift * 0.28, 52, 88) : 0;
+      const targetRotateY = isLookThrow ? clamp(startRotateY - unitX * 42 + floor.roll * 0.22 + aimX * 12, -54, 54) : 0;
       const targetScale = isLookThrow ? clamp(920 / (920 + forwardDistance * 0.62), 0.24, 0.78) : 0.98;
       const nextFlightId = flightId.current + 1;
       const nextThrown = thrownRef.current + 1;
@@ -1041,6 +1117,16 @@ export default function App() {
     rotate.set(rotationFromGrab(grabPoint.current, info.offset.x, info.offset.y));
   }
 
+  function calibrateFloor() {
+    const sample = orientationSampleRef.current ?? { alpha: 0, beta: 68, gamma: 0 };
+    const nextCalibration = { beta: sample.beta, gamma: sample.gamma, isSet: true };
+    const nextFloorGuide = createFloorGuide(sample, nextCalibration);
+
+    floorCalibrationRef.current = nextCalibration;
+    floorGuideRef.current = nextFloorGuide;
+    setFloorGuide(nextFloorGuide);
+  }
+
   async function toggleFullscreen() {
     if (!document.fullscreenElement) {
       await document.documentElement.requestFullscreen?.();
@@ -1069,9 +1155,46 @@ export default function App() {
     setFlyingCards((value) => value.filter((card) => card.flightMode !== "look"));
   }, []);
 
+  const checkArSupport = useCallback(async () => {
+    const base = createArDiagnostics("Checking AR...");
+    setArDiagnostics(base);
+
+    if (!base.secure) {
+      setArDiagnostics({ ...base, immersiveAr: "unsupported", message: "AR needs HTTPS" });
+      return;
+    }
+
+    const xr = (navigator as Navigator & { xr?: XrSystemLike }).xr;
+
+    if (!xr?.isSessionSupported) {
+      setArDiagnostics({ ...base, hasNavigatorXr: false, immersiveAr: "unsupported", message: "navigator.xr missing" });
+      return;
+    }
+
+    try {
+      const supported = await xr.isSessionSupported("immersive-ar");
+      setArDiagnostics({
+        ...base,
+        hasNavigatorXr: true,
+        immersiveAr: supported ? "supported" : "unsupported",
+        message: supported ? "immersive-ar supported" : "immersive-ar unsupported",
+      });
+    } catch (error) {
+      setArDiagnostics({
+        ...base,
+        hasNavigatorXr: true,
+        immersiveAr: "error",
+        message: error instanceof DOMException ? `${error.name}: ${error.message}` : "AR check failed",
+      });
+    }
+  }, []);
+
   const enterLookThrowMode = useCallback(async () => {
     setLookModeMessage("Starting camera...");
     setCameraStatus("starting");
+    setGyroStatus("waiting");
+    setArDiagnostics(createArDiagnostics("AR not checked"));
+    void checkArSupport();
 
     if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
       setLookMode("camera");
@@ -1098,7 +1221,7 @@ export default function App() {
       setCameraStatus(error instanceof DOMException && error.name === "NotAllowedError" ? "blocked" : "error");
       setLookModeMessage(cameraFailureMessage(error));
     }
-  }, []);
+  }, [checkArSupport]);
 
   const markLookCameraReady = useCallback(() => {
     if (!lookStreamRef.current || !lookVideoRef.current) {
@@ -1142,25 +1265,49 @@ export default function App() {
     if (!lookMode) {
       gyroAimRef.current = { x: 0, y: 0, rotateX: 0, rotateY: 0 };
       setGyroAim(gyroAimRef.current);
+      setGyroStatus("waiting");
+      orientationSampleRef.current = null;
+      floorCalibrationRef.current = { beta: 68, gamma: 0, isSet: false };
+      floorGuideRef.current = DEFAULT_FLOOR_GUIDE;
+      setFloorGuide(DEFAULT_FLOOR_GUIDE);
       return undefined;
     }
 
     const handleOrientation = (event: DeviceOrientationEvent) => {
+      const sample = {
+        alpha: event.alpha ?? 0,
+        beta: event.beta ?? 68,
+        gamma: event.gamma ?? 0,
+      };
       const gamma = clamp(event.gamma ?? 0, -32, 32);
       const beta = clamp((event.beta ?? 0) - 55, -38, 38);
       const nextAim = {
-        x: gamma * 1.6,
-        y: beta * 1.25,
-        rotateX: clamp(-beta * 0.22, -12, 12),
-        rotateY: clamp(gamma * 0.24, -12, 12),
+        x: gamma * 0.82,
+        y: beta * 0.58,
+        rotateX: clamp(-beta * 0.08, -4, 4),
+        rotateY: clamp(gamma * 0.1, -5, 5),
       };
+      const nextFloorGuide = createFloorGuide(sample, floorCalibrationRef.current);
 
+      orientationSampleRef.current = sample;
       gyroAimRef.current = nextAim;
+      floorGuideRef.current = nextFloorGuide;
       setGyroAim(nextAim);
+      setFloorGuide(nextFloorGuide);
+      setGyroStatus("live");
     };
 
     window.addEventListener("deviceorientation", handleOrientation, true);
-    return () => window.removeEventListener("deviceorientation", handleOrientation, true);
+    const timeout = window.setTimeout(() => {
+      if (!orientationSampleRef.current) {
+        setGyroStatus("unavailable");
+      }
+    }, 1600);
+
+    return () => {
+      window.clearTimeout(timeout);
+      window.removeEventListener("deviceorientation", handleOrientation, true);
+    };
   }, [lookMode]);
 
   useEffect(() => {
@@ -1340,6 +1487,19 @@ export default function App() {
           />
           <div className="lookBackdrop" />
           {isLookCameraReady ? <div className="lookReticle" aria-hidden="true" /> : null}
+          {isLookCameraReady ? (
+            <div
+              className="floorGuide"
+              style={
+                {
+                  "--floor-y": `${floorGuide.floor}%`,
+                  "--horizon-y": `${floorGuide.horizon}%`,
+                  "--floor-roll": `${floorGuide.roll * 0.42}deg`,
+                } as CSSProperties
+              }
+              aria-hidden="true"
+            />
+          ) : null}
           <div className="lookModeLabel">{lookModeMessage}</div>
           {!isLookCameraReady ? (
             <div className="lookCameraNotice" role="status" aria-live="polite">
@@ -1371,12 +1531,26 @@ export default function App() {
                   <button
                     className="lookCalibrationReset"
                     type="button"
+                    onClick={calibrateFloor}
+                    aria-label="Set floor from current phone angle"
+                    title="Set floor"
+                  >
+                    <Crosshair size={14} strokeWidth={2.4} />
+                  </button>
+                  <button
+                    className="lookCalibrationReset"
+                    type="button"
                     onClick={() => setLookCardAngle(DEFAULT_LOOK_CARD_ANGLE)}
                     aria-label="Reset card angle"
                     title="Reset angle"
                   >
                     <RotateCcw size={14} strokeWidth={2.4} />
                   </button>
+                  <div className="lookDiagnostics" aria-live="polite">
+                    <span>Gyro {gyroStatus}</span>
+                    <span>XR {arDiagnostics.immersiveAr}</span>
+                    <span>{arDiagnostics.message}</span>
+                  </div>
                 </label>
               </div>
               <div
@@ -1387,6 +1561,7 @@ export default function App() {
                     "--look-aim-y": `${gyroAim.y}px`,
                     "--look-tilt-x": `${gyroAim.rotateX}deg`,
                     "--look-tilt-y": `${gyroAim.rotateY}deg`,
+                    "--floor-y": `${floorGuide.floor}%`,
                   } as CSSProperties
                 }
               >
