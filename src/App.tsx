@@ -88,8 +88,31 @@ type XrSessionLike = {
   addEventListener: (type: "end", listener: () => void) => void;
   removeEventListener?: (type: "end", listener: () => void) => void;
   requestAnimationFrame?: (callback: (time: number, frame: unknown) => void) => number;
+  cancelAnimationFrame?: (handle: number) => void;
   requestReferenceSpace?: (type: "local-floor" | "local" | "viewer") => Promise<unknown>;
+  renderState?: { baseLayer?: XrWebGlLayerLike };
   updateRenderState?: (state: unknown) => void;
+};
+
+type XrViewportLike = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type XrWebGlLayerLike = {
+  framebuffer: WebGLFramebuffer | null;
+  getViewport?: (view: unknown) => XrViewportLike | null;
+};
+
+type XrFrameLike = {
+  getViewerPose?: (referenceSpace: unknown) => { views: unknown[] } | null;
+};
+
+type PreparedXrSession = {
+  canvas: HTMLCanvasElement;
+  stop: () => void;
 };
 
 type Point = {
@@ -828,14 +851,28 @@ function arFailureMessage(error?: unknown) {
   return "AR could not start";
 }
 
-async function prepareXrSession(session: XrSessionLike) {
+async function prepareXrSession(session: XrSessionLike): Promise<PreparedXrSession> {
   const canvas = document.createElement("canvas");
   canvas.className = "xrRenderCanvas";
-  const gl = canvas.getContext("webgl", {
+
+  const resizeCanvas = () => {
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.max(1, Math.floor(window.innerWidth * pixelRatio));
+    canvas.height = Math.max(1, Math.floor(window.innerHeight * pixelRatio));
+  };
+
+  resizeCanvas();
+
+  const contextOptions = {
     alpha: true,
-    antialias: true,
+    antialias: false,
+    depth: true,
     preserveDrawingBuffer: false,
-  }) as (WebGLRenderingContext & { makeXRCompatible?: () => Promise<void> }) | null;
+    xrCompatible: true,
+  } as WebGLContextAttributes & { xrCompatible: boolean };
+  const gl = canvas.getContext("webgl", contextOptions) as
+    | (WebGLRenderingContext & { makeXRCompatible?: () => Promise<void> })
+    | null;
 
   if (!gl) {
     throw new Error("WebGL unavailable");
@@ -844,26 +881,68 @@ async function prepareXrSession(session: XrSessionLike) {
   await gl.makeXRCompatible?.();
 
   const XRWebGLLayerCtor = (window as unknown as {
-    XRWebGLLayer?: new (session: XrSessionLike, context: WebGLRenderingContext) => unknown;
+    XRWebGLLayer?: new (session: XrSessionLike, context: WebGLRenderingContext) => XrWebGlLayerLike;
   }).XRWebGLLayer;
 
-  if (!XRWebGLLayerCtor || !session.updateRenderState) {
+  if (!XRWebGLLayerCtor || !session.updateRenderState || !session.requestAnimationFrame) {
     throw new Error("XR WebGL layer unavailable");
   }
 
+  window.addEventListener("resize", resizeCanvas);
   document.body.appendChild(canvas);
-  session.updateRenderState({ baseLayer: new XRWebGLLayerCtor(session, gl) });
-  await session.requestReferenceSpace?.("local-floor").catch(() => session.requestReferenceSpace?.("local"));
+  const baseLayer = new XRWebGLLayerCtor(session, gl);
+  session.updateRenderState({ baseLayer });
+  const referenceSpace = await session.requestReferenceSpace?.("local-floor").catch(() => session.requestReferenceSpace?.("local"));
+  let running = true;
+  let frameHandle: number | null = null;
 
-  const drawFrame = () => {
+  const drawFrame = (_time: number, frame: unknown) => {
+    if (!running) {
+      return;
+    }
+
+    frameHandle = session.requestAnimationFrame?.(drawFrame) ?? null;
+    const layer = session.renderState?.baseLayer ?? baseLayer;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
     gl.clearColor(0, 0, 0, 0);
+    gl.clearDepth(1);
+    gl.enable(gl.DEPTH_TEST);
+
+    const pose = referenceSpace ? (frame as XrFrameLike).getViewerPose?.(referenceSpace) : null;
+
+    if (pose?.views.length && layer.getViewport) {
+      for (const view of pose.views) {
+        const viewport = layer.getViewport(view);
+
+        if (viewport) {
+          gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
+          gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        }
+      }
+
+      return;
+    }
+
+    gl.viewport(0, 0, canvas.width, canvas.height);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    session.requestAnimationFrame?.(drawFrame);
   };
 
-  session.requestAnimationFrame?.(drawFrame);
+  frameHandle = session.requestAnimationFrame(drawFrame);
 
-  return canvas;
+  return {
+    canvas,
+    stop: () => {
+      running = false;
+      window.removeEventListener("resize", resizeCanvas);
+
+      if (frameHandle !== null) {
+        session.cancelAnimationFrame?.(frameHandle);
+        frameHandle = null;
+      }
+
+      canvas.remove();
+    },
+  };
 }
 
 function getExitDistance(unitX: number, unitY: number, startX: number, startY: number) {
@@ -920,6 +999,7 @@ export default function App() {
   const eyeLongPressed = useRef(false);
   const xrSessionRef = useRef<XrSessionLike | null>(null);
   const xrCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const xrRenderCleanupRef = useRef<(() => void) | null>(null);
   const controls = useAnimationControls();
   const x = useMotionValue(0);
   const y = useMotionValue(0);
@@ -1024,7 +1104,9 @@ export default function App() {
         setThrown(nextThrown);
         setCards((value) => nextStack(value, nextThrown));
       });
-      setParticles((value) => [...value.slice(-36), ...createParticles(topCard, startX, startY, nextParticleId)]);
+      if (!isLookThrow) {
+        setParticles((value) => [...value.slice(-36), ...createParticles(topCard, startX, startY, nextParticleId)]);
+      }
       setCombo((value) => (now - previousThrowAt < COMBO_WINDOW_MS ? value + 1 : 1));
       vibrate();
     },
@@ -1101,7 +1183,8 @@ export default function App() {
     const session = xrSessionRef.current;
     xrSessionRef.current = null;
     void session?.end().catch(() => undefined);
-    xrCanvasRef.current?.remove();
+    xrRenderCleanupRef.current?.();
+    xrRenderCleanupRef.current = null;
     xrCanvasRef.current = null;
     setLookMode(null);
     setLookModeMessage("");
@@ -1133,13 +1216,22 @@ export default function App() {
       }
 
       const session = await xr.requestSession("immersive-ar", {
-        optionalFeatures: ["dom-overlay", "local-floor", "unbounded", "hit-test"],
+        optionalFeatures: ["dom-overlay", "local-floor"],
         domOverlay: { root: document.body },
       });
-      const canvas = await prepareXrSession(session);
+      let preparedSession: PreparedXrSession;
+
+      try {
+        preparedSession = await prepareXrSession(session);
+      } catch (error) {
+        void session.end().catch(() => undefined);
+        throw error;
+      }
+
       const handleEnd = () => {
         xrSessionRef.current = null;
-        canvas.remove();
+        preparedSession.stop();
+        xrRenderCleanupRef.current = null;
         xrCanvasRef.current = null;
         setLookMode(null);
         setLookModeMessage("");
@@ -1149,7 +1241,8 @@ export default function App() {
 
       session.addEventListener("end", handleEnd);
       xrSessionRef.current = session;
-      xrCanvasRef.current = canvas;
+      xrCanvasRef.current = preparedSession.canvas;
+      xrRenderCleanupRef.current = preparedSession.stop;
       setLookMode("ar");
       setArStatus("ready");
       setLookModeMessage("AR Throw");
@@ -1158,7 +1251,8 @@ export default function App() {
       setLookModeMessage(arFailureMessage(error));
       void xrSessionRef.current?.end().catch(() => undefined);
       xrSessionRef.current = null;
-      xrCanvasRef.current?.remove();
+      xrRenderCleanupRef.current?.();
+      xrRenderCleanupRef.current = null;
       xrCanvasRef.current = null;
       window.setTimeout(() => setLookModeMessage(""), 3200);
     }
@@ -1167,7 +1261,7 @@ export default function App() {
   useEffect(() => {
     return () => {
       void xrSessionRef.current?.end().catch(() => undefined);
-      xrCanvasRef.current?.remove();
+      xrRenderCleanupRef.current?.();
     };
   }, []);
 
@@ -1348,8 +1442,8 @@ export default function App() {
               <div
                 className="lookCardStage"
               >
-                {cards.slice(0, -1).map((card, index) => {
-                  const depth = cards.length - 1 - index;
+                {cards.slice(Math.max(0, cards.length - 2), -1).map((card, index, visibleStack) => {
+                  const depth = visibleStack.length - index;
 
                   return (
                     <div

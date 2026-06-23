@@ -151,8 +151,8 @@ button {
 .xrRenderCanvas {
   position: fixed;
   inset: 0;
-  width: 1px;
-  height: 1px;
+  width: 100vw;
+  height: 100vh;
   opacity: 0;
   pointer-events: none;
 }
@@ -176,6 +176,13 @@ button {
   z-index: 12;
   pointer-events: none;
   will-change: transform;
+}
+
+.lookMode .cardLines,
+.lookMode .cardTexture,
+.lookMode .cardFinish,
+.lookMode .cardEmoji {
+  display: none;
 }
 
 .counter,
