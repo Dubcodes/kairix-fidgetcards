@@ -112,6 +112,12 @@ type ArDiagnostics = {
   message: string;
 };
 
+type CameraDebug = {
+  trackState: string;
+  videoState: string;
+  size: string;
+};
+
 type XrSystemLike = {
   isSessionSupported?: (mode: "immersive-ar") => Promise<boolean>;
 };
@@ -174,6 +180,7 @@ const DEFAULT_FLOOR_GUIDE: FloorGuide = {
   pitch: 0,
   roll: 0,
 };
+const LOOK_CARD_LINGER_MS = 12000;
 const EMOJI_POOL = [
   "✨",
   "🌈",
@@ -866,6 +873,24 @@ function createArDiagnostics(message = "AR not checked"): ArDiagnostics {
   };
 }
 
+function getCameraDebug(stream: MediaStream | null, video: HTMLVideoElement | null): CameraDebug {
+  const track = stream?.getVideoTracks()[0];
+  const videoState = video ? `${video.readyState}` : "none";
+  const size = video ? `${video.videoWidth}x${video.videoHeight}` : "0x0";
+
+  return {
+    trackState: track?.readyState ?? (stream?.active ? "active" : "none"),
+    videoState,
+    size,
+  };
+}
+
+function isCameraStreamUsable(stream: MediaStream | null) {
+  const track = stream?.getVideoTracks()[0];
+
+  return Boolean(stream?.active || track?.readyState === "live");
+}
+
 function createFloorGuide(sample: OrientationSample | null, calibration: FloorCalibration): FloorGuide {
   if (!sample) {
     return DEFAULT_FLOOR_GUIDE;
@@ -937,6 +962,7 @@ export default function App() {
   const [lookCardAngle, setLookCardAngle] = useState(DEFAULT_LOOK_CARD_ANGLE);
   const [lookCalibrationOpen, setLookCalibrationOpen] = useState(false);
   const [arDiagnostics, setArDiagnostics] = useState<ArDiagnostics>(() => createArDiagnostics());
+  const [cameraDebug, setCameraDebug] = useState<CameraDebug>({ trackState: "none", videoState: "none", size: "0x0" });
   const flightId = useRef(0);
   const particleId = useRef(0);
   const thrownRef = useRef(0);
@@ -1011,9 +1037,9 @@ export default function App() {
       const targetX = isLookThrow ? startX + unitX * lookLateralDistance + aimX * forwardDistance * 0.1 : unitX * exitDistance;
       const targetY = isLookThrow ? clamp(floorTargetY + lookLift + lookFloorDrop, -viewportHeight * 0.32, viewportHeight * 0.78) : unitY * exitDistance;
       const targetZ = isLookThrow ? -forwardDistance : 0;
-      const pixelsPerSecond = clamp(throwSpeed * (isLookThrow ? 1.05 : 0.92), 260, 4700);
+      const pixelsPerSecond = clamp(throwSpeed * (isLookThrow ? 0.62 : 0.92), 260, 4700);
       const duration = isLookThrow
-        ? clamp(forwardDistance / pixelsPerSecond, 0.34, 2.95)
+        ? clamp(forwardDistance / pixelsPerSecond, 0.95, 6.4)
         : clamp(exitDistance / pixelsPerSecond, MIN_FLIGHT_DURATION, MAX_FLIGHT_DURATION);
       const startRotate = rotate.get();
       const startRotateX = isLookThrow ? lookCardAngle : 0;
@@ -1169,9 +1195,23 @@ export default function App() {
 
     video.muted = true;
     video.playsInline = true;
+    setCameraDebug(getCameraDebug(stream, video));
 
     return true;
   }, []);
+
+  const setLookVideoNode = useCallback(
+    (node: HTMLVideoElement | null) => {
+      lookVideoRef.current = node;
+
+      if (!node || !attachLookVideoStream()) {
+        return;
+      }
+
+      void node.play().catch(() => undefined);
+    },
+    [attachLookVideoStream],
+  );
 
   const checkArSupport = useCallback(async () => {
     const base = createArDiagnostics("Checking AR...");
@@ -1208,7 +1248,9 @@ export default function App() {
   }, []);
 
   const markLookCameraReady = useCallback(() => {
-    if (!lookStreamRef.current?.active) {
+    setCameraDebug(getCameraDebug(lookStreamRef.current, lookVideoRef.current));
+
+    if (!isCameraStreamUsable(lookStreamRef.current)) {
       return;
     }
 
@@ -1247,10 +1289,18 @@ export default function App() {
 
       lookStreamRef.current = stream;
       setLookMode("camera");
-      setLookModeMessage("Camera stream acquired...");
+      setCameraDebug(getCameraDebug(stream, lookVideoRef.current));
+
+      if (isCameraStreamUsable(stream)) {
+        setCameraStatus("ready");
+        setLookModeMessage("3D Throw + Gyro");
+      } else {
+        setLookModeMessage("Camera stream acquired...");
+      }
 
       window.setTimeout(() => {
-        if (lookStreamRef.current?.active) {
+        setCameraDebug(getCameraDebug(lookStreamRef.current, lookVideoRef.current));
+        if (isCameraStreamUsable(lookStreamRef.current)) {
           markLookCameraReady();
         }
       }, 900);
@@ -1272,14 +1322,20 @@ export default function App() {
       return;
     }
 
+    if (isCameraStreamUsable(lookStreamRef.current)) {
+      markLookCameraReady();
+    }
+
     void video
       .play()
       .then(() => {
-        if (lookStreamRef.current?.active || video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+        setCameraDebug(getCameraDebug(lookStreamRef.current, video));
+        if (isCameraStreamUsable(lookStreamRef.current) || video.readyState >= HTMLMediaElement.HAVE_METADATA) {
           markLookCameraReady();
         }
       })
       .catch(() => {
+        setCameraDebug(getCameraDebug(lookStreamRef.current, video));
         setCameraStatus("error");
         setLookModeMessage("Tap again or use HTTPS for camera");
       });
@@ -1499,7 +1555,7 @@ export default function App() {
       {lookMode ? (
         <section className={`lookMode lookMode-${lookMode} camera-${cameraStatus}`} aria-label="Camera throw mode">
           <video
-            ref={lookVideoRef}
+            ref={setLookVideoNode}
             className="lookVideo"
             autoPlay
             playsInline
@@ -1529,6 +1585,9 @@ export default function App() {
           {!isLookCameraReady ? (
             <div className="lookCameraNotice" role="status" aria-live="polite">
               <strong>{lookModeMessage}</strong>
+              <span>
+                Track {cameraDebug.trackState} · Video {cameraDebug.videoState} · {cameraDebug.size}
+              </span>
               <span>Exit with the eye button.</span>
             </div>
           ) : null}
@@ -1574,6 +1633,7 @@ export default function App() {
                   <div className="lookDiagnostics" aria-live="polite">
                     <span>Gyro {gyroStatus}</span>
                     <span>XR {arDiagnostics.immersiveAr}</span>
+                    <span>Cam {cameraDebug.trackState} {cameraDebug.size}</span>
                     <span>{arDiagnostics.message}</span>
                   </div>
                 </label>
@@ -1671,7 +1731,9 @@ export default function App() {
                       times: [0, 0.58, 1],
                     }}
                     onAnimationComplete={() => {
-                      setFlyingCards((value) => value.filter((flyingCard) => flyingCard.flightId !== card.flightId));
+                      window.setTimeout(() => {
+                        setFlyingCards((value) => value.filter((flyingCard) => flyingCard.flightId !== card.flightId));
+                      }, LOOK_CARD_LINGER_MS);
                     }}
                     style={{
                       background: cardBackground(card, card.isGradient),
