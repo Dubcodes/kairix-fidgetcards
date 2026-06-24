@@ -7,9 +7,23 @@ export type ArCardColor = {
 export type ArCard = {
   id: number;
   color: ArCardColor;
+  isGradient?: boolean;
+  lineCount?: number;
+  patternLevel?: number;
+  randomLineColor?: boolean;
+  textureKind?: string;
+  finishKind?: string;
+  emojiMark?: {
+    emoji: string;
+    x: number;
+    y: number;
+    size: number;
+    rotate: number;
+    opacity: number;
+  } | null;
 };
 
-export const AR_PROOF_BUILD = "ar-world-card-physics-2026-06-24-01";
+export const AR_PROOF_BUILD = "ar-world-card-physics-2026-06-25-01";
 
 export type ArCardControls = {
   cardDistance: number;
@@ -102,8 +116,9 @@ type Vec3 = {
 type Renderer = {
   program: WebGLProgram;
   positionLocation: number;
+  uvLocation: number;
   mvpLocation: WebGLUniformLocation | null;
-  colorLocation: WebGLUniformLocation | null;
+  textureLocation: WebGLUniformLocation | null;
   vertexBuffer: WebGLBuffer;
 };
 
@@ -130,13 +145,16 @@ export type ArEngine = {
 
 const PLANE_SIZE_METERS = 1.25;
 const PLANE_DISTANCE_METERS = 1.7;
-const CARD_WIDTH_METERS = 0.42;
-const CARD_HEIGHT_METERS = 0.58;
+const CARD_WIDTH_METERS = 0.17;
+const CARD_HEIGHT_METERS = 0.238;
 const CARD_VERTICAL_OFFSET_METERS = -0.04;
-const WORLD_CARD_LIMIT = 32;
-const WORLD_GRAVITY = 3.8;
-const WORLD_DRAG = 0.44;
+const WORLD_CARD_LIMIT = 18;
+const WORLD_GRAVITY = 2.35;
+const WORLD_DRAG = 0.32;
 const WORLD_FLOOR_Y = 0.018;
+const AR_CARD_MIN_PX = 110;
+const AR_CARD_MAX_PX = 220;
+const AR_CARD_VIEWPORT_SCALE = 0.28;
 const DEFAULT_CARD_CONTROLS: ArCardControls = {
   cardDistance: 0.82,
   cardTiltDeg: 56,
@@ -303,6 +321,12 @@ function phoneCardPoseFromMatrix(matrix: Float32Array, controls: ArCardControls)
   };
 }
 
+function arCardPixelWidth(controls: ArCardControls) {
+  const viewportWidth = window.innerWidth || 390;
+
+  return clamp((viewportWidth * AR_CARD_VIEWPORT_SCALE) / controls.cardDistance, AR_CARD_MIN_PX, AR_CARD_MAX_PX);
+}
+
 function hslToRgb(hue: number, saturation: number, lightness: number): [number, number, number] {
   const h = ((hue % 360) + 360) % 360;
   const s = clamp(saturation, 0, 100) / 100;
@@ -335,6 +359,184 @@ function hslToRgb(hue: number, saturation: number, lightness: number): [number, 
   }
 
   return [r + m, g + m, b + m];
+}
+
+function colorToCanvasCss(color: ArCardColor, lightnessOffset = 0, saturationOffset = 0, alpha = 1) {
+  const saturation = clamp(color.saturation + saturationOffset, 0, 100);
+  const lightness = clamp(color.lightness + lightnessOffset, 0, 100);
+
+  if (alpha >= 1) {
+    return `hsl(${color.hue} ${saturation}% ${lightness}%)`;
+  }
+
+  return `hsl(${color.hue} ${saturation}% ${lightness}% / ${alpha})`;
+}
+
+function seededNumber(seed: number) {
+  const value = Math.sin(seed * 9301 + 49297) * 233280;
+  return value - Math.floor(value);
+}
+
+function seededBetween(seed: number, min: number, max: number) {
+  return min + seededNumber(seed) * (max - min);
+}
+
+function roundedRectPath(context: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) {
+  context.beginPath();
+  context.moveTo(x + radius, y);
+  context.lineTo(x + width - radius, y);
+  context.quadraticCurveTo(x + width, y, x + width, y + radius);
+  context.lineTo(x + width, y + height - radius);
+  context.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+  context.lineTo(x + radius, y + height);
+  context.quadraticCurveTo(x, y + height, x, y + height - radius);
+  context.lineTo(x, y + radius);
+  context.quadraticCurveTo(x, y, x + radius, y);
+  context.closePath();
+}
+
+function drawCanvasLinePattern(context: CanvasRenderingContext2D, card: ArCard, width: number, height: number) {
+  const lineCount = Math.max(0, Math.min(5, card.lineCount ?? 0));
+
+  if (!lineCount) {
+    return;
+  }
+
+  context.save();
+  context.lineCap = "round";
+  context.lineJoin = "round";
+
+  for (let index = 0; index < lineCount; index += 1) {
+    const seed = card.id * 211 + index * 997;
+    const startY = seededBetween(seed + 1, 0.08, 0.92) * height;
+    const endY = seededBetween(seed + 2, 0.08, 0.92) * height;
+    const bend = seededBetween(seed + 3, -0.18, 0.18) * height;
+    const lineHue = (card.color.hue + 130 + index * 47) % 360;
+
+    context.strokeStyle = card.randomLineColor ? `hsl(${lineHue} 86% 62% / 0.92)` : "hsl(0 0% 4% / 0.82)";
+    context.lineWidth = card.randomLineColor ? 2.6 : 2.1;
+    context.beginPath();
+    context.moveTo(0, startY);
+    context.bezierCurveTo(width * 0.32, startY + bend, width * 0.68, endY - bend, width, endY);
+    context.stroke();
+  }
+
+  context.restore();
+}
+
+function drawCanvasTexture(context: CanvasRenderingContext2D, card: ArCard, width: number, height: number) {
+  const kind = card.textureKind;
+
+  if (!kind || kind === "none") {
+    return;
+  }
+
+  context.save();
+  context.globalAlpha = 0.34;
+  context.strokeStyle = "rgba(255, 255, 255, 0.58)";
+  context.fillStyle = "rgba(255, 255, 255, 0.34)";
+
+  if (kind === "dots") {
+    for (let index = 0; index < 22; index += 1) {
+      const seed = card.id * 307 + index * 3;
+      context.beginPath();
+      context.arc(seededBetween(seed, 0.08, 0.92) * width, seededBetween(seed + 1, 0.08, 0.92) * height, seededBetween(seed + 2, 1.2, 3.6), 0, Math.PI * 2);
+      context.fill();
+    }
+  } else if (kind === "grid") {
+    context.lineWidth = 1.2;
+    for (let x = 16; x < width; x += 28) {
+      context.beginPath();
+      context.moveTo(x, 0);
+      context.lineTo(x + 10, height);
+      context.stroke();
+    }
+    for (let y = 18; y < height; y += 30) {
+      context.beginPath();
+      context.moveTo(0, y);
+      context.lineTo(width, y + 7);
+      context.stroke();
+    }
+  } else if (kind === "checker") {
+    const cell = 24;
+    for (let y = 0; y < height; y += cell) {
+      for (let x = 0; x < width; x += cell) {
+        if ((Math.floor(x / cell) + Math.floor(y / cell) + card.id) % 2 === 0) {
+          context.fillRect(x, y, cell, cell);
+        }
+      }
+    }
+  }
+
+  context.restore();
+}
+
+function createCardCanvas(card: ArCard) {
+  const width = 256;
+  const height = 358;
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+
+  canvas.width = width;
+  canvas.height = height;
+
+  if (!context) {
+    return canvas;
+  }
+
+  context.clearRect(0, 0, width, height);
+  context.save();
+  roundedRectPath(context, 6, 6, width - 12, height - 12, 24);
+  context.clip();
+
+  if (card.isGradient) {
+    const gradient = context.createLinearGradient(0, 0, width, height);
+    gradient.addColorStop(0, colorToCanvasCss(card.color, 14, 6));
+    gradient.addColorStop(0.54, colorToCanvasCss({ ...card.color, hue: (card.color.hue + 68) % 360 }, 4, 8));
+    gradient.addColorStop(1, colorToCanvasCss({ ...card.color, hue: (card.color.hue + 166) % 360 }, -5, 4));
+    context.fillStyle = gradient;
+  } else {
+    context.fillStyle = colorToCanvasCss(card.color);
+  }
+  context.fillRect(0, 0, width, height);
+
+  const glow = context.createRadialGradient(width * 0.26, height * 0.18, 0, width * 0.26, height * 0.18, width * 0.72);
+  glow.addColorStop(0, "rgba(255, 255, 255, 0.28)");
+  glow.addColorStop(1, "rgba(255, 255, 255, 0)");
+  context.fillStyle = glow;
+  context.fillRect(0, 0, width, height);
+
+  drawCanvasTexture(context, card, width, height);
+  drawCanvasLinePattern(context, card, width, height);
+
+  if (card.emojiMark) {
+    context.save();
+    context.globalAlpha = card.emojiMark.opacity;
+    context.translate((card.emojiMark.x / 100) * width, (card.emojiMark.y / 140) * height);
+    context.rotate((card.emojiMark.rotate * Math.PI) / 180);
+    context.font = `${Math.max(22, card.emojiMark.size * 1.35)}px "Segoe UI Emoji", "Apple Color Emoji", sans-serif`;
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillText(card.emojiMark.emoji, 0, 0);
+    context.restore();
+  }
+
+  if (card.finishKind && card.finishKind !== "none") {
+    const shine = context.createLinearGradient(0, height * 0.2, width, height * 0.72);
+    shine.addColorStop(0, "rgba(255,255,255,0)");
+    shine.addColorStop(0.48, "rgba(255,255,255,0.22)");
+    shine.addColorStop(0.62, "rgba(255,255,255,0)");
+    context.fillStyle = shine;
+    context.fillRect(0, 0, width, height);
+  }
+
+  context.restore();
+  roundedRectPath(context, 8, 8, width - 16, height - 16, 22);
+  context.lineWidth = 3;
+  context.strokeStyle = colorToCanvasCss(card.color, 10, -18, 0.72);
+  context.stroke();
+
+  return canvas;
 }
 
 function formatVec(vector: Vec3 | null) {
@@ -370,9 +572,12 @@ function createRenderer(gl: WebGLRenderingContext): Renderer {
     gl.VERTEX_SHADER,
     `
       attribute vec3 aPosition;
+      attribute vec2 aUv;
       uniform mat4 uMvp;
+      varying vec2 vUv;
 
       void main() {
+        vUv = aUv;
         gl_Position = uMvp * vec4(aPosition, 1.0);
       }
     `,
@@ -382,10 +587,11 @@ function createRenderer(gl: WebGLRenderingContext): Renderer {
     gl.FRAGMENT_SHADER,
     `
       precision mediump float;
-      uniform vec4 uColor;
+      uniform sampler2D uTexture;
+      varying vec2 vUv;
 
       void main() {
-        gl_FragColor = uColor;
+        gl_FragColor = texture2D(uTexture, vUv);
       }
     `,
   );
@@ -412,15 +618,21 @@ function createRenderer(gl: WebGLRenderingContext): Renderer {
   gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
   gl.bufferData(
     gl.ARRAY_BUFFER,
-    new Float32Array([-0.5, 0, -0.5, 0.5, 0, -0.5, -0.5, 0, 0.5, 0.5, 0, 0.5]),
+    new Float32Array([
+      -0.5, 0, -0.5, 0, 1,
+      0.5, 0, -0.5, 1, 1,
+      -0.5, 0, 0.5, 0, 0,
+      0.5, 0, 0.5, 1, 0,
+    ]),
     gl.STATIC_DRAW,
   );
 
   return {
     program,
     positionLocation: gl.getAttribLocation(program, "aPosition"),
+    uvLocation: gl.getAttribLocation(program, "aUv"),
     mvpLocation: gl.getUniformLocation(program, "uMvp"),
-    colorLocation: gl.getUniformLocation(program, "uColor"),
+    textureLocation: gl.getUniformLocation(program, "uTexture"),
     vertexBuffer,
   };
 }
@@ -598,6 +810,7 @@ export async function createArEngine({
     let activeCard = initialCard;
     let nextWorldCardKey = 1;
     let worldCards: WorldCard[] = [];
+    const textureCache = new Map<string, WebGLTexture>();
     let cardControls: ArCardControls = {
       ...DEFAULT_CARD_CONTROLS,
       ...initialConfig,
@@ -610,15 +823,70 @@ export async function createArEngine({
       };
     };
 
-    const drawPlane = (modelMatrix: Float32Array, viewProjection: Float32Array, color: readonly [number, number, number], alpha: number) => {
+    const getCardTexture = (card: ArCard) => {
+      const textureKey = [
+        card.id,
+        card.color.hue,
+        card.color.saturation,
+        card.color.lightness,
+        card.isGradient ? 1 : 0,
+        card.lineCount ?? 0,
+        card.patternLevel ?? 0,
+        card.randomLineColor ? 1 : 0,
+        card.textureKind ?? "none",
+        card.finishKind ?? "none",
+        card.emojiMark?.emoji ?? "",
+      ].join(":");
+      const cachedTexture = textureCache.get(textureKey);
+
+      if (cachedTexture) {
+        return cachedTexture;
+      }
+
+      const texture = gl.createTexture();
+
+      if (!texture) {
+        return null;
+      }
+
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, createCardCanvas(card));
+      textureCache.set(textureKey, texture);
+
+      if (textureCache.size > 48) {
+        const firstKey = textureCache.keys().next().value;
+        const oldTexture = firstKey ? textureCache.get(firstKey) : null;
+
+        if (firstKey) {
+          textureCache.delete(firstKey);
+        }
+
+        if (oldTexture) {
+          gl.deleteTexture(oldTexture);
+        }
+      }
+
+      return texture;
+    };
+
+    const drawTexturedPlane = (modelMatrix: Float32Array, viewProjection: Float32Array, texture: WebGLTexture) => {
       const mvp = multiplyMatrix4(viewProjection, modelMatrix);
 
       gl.useProgram(renderer.program);
       gl.bindBuffer(gl.ARRAY_BUFFER, renderer.vertexBuffer);
       gl.enableVertexAttribArray(renderer.positionLocation);
-      gl.vertexAttribPointer(renderer.positionLocation, 3, gl.FLOAT, false, 0, 0);
+      gl.vertexAttribPointer(renderer.positionLocation, 3, gl.FLOAT, false, 20, 0);
+      gl.enableVertexAttribArray(renderer.uvLocation);
+      gl.vertexAttribPointer(renderer.uvLocation, 2, gl.FLOAT, false, 20, 12);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, texture);
       gl.uniformMatrix4fv(renderer.mvpLocation, false, mvp);
-      gl.uniform4f(renderer.colorLocation, color[0], color[1], color[2], alpha);
+      gl.uniform1i(renderer.textureLocation, 0);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     };
 
@@ -627,15 +895,21 @@ export async function createArEngine({
         return;
       }
 
-      const throwSpeed = clamp(gesture.throwSpeed / 1250, 0.35, 4.8);
-      const screenLift = clamp(-gesture.unitY, -0.35, 1);
+      const throwSpeed = clamp(gesture.throwSpeed / 560, 1.05, 8.4);
+      const screenLift = clamp(-gesture.unitY, -0.45, 1);
+      const metersPerPixel = CARD_WIDTH_METERS / arCardPixelWidth(cardControls);
+      const releaseOffset = addVec3(
+        scaleVec3(lastCardPose.right, clamp(gesture.startX * metersPerPixel, -CARD_WIDTH_METERS * 1.25, CARD_WIDTH_METERS * 1.25)),
+        scaleVec3(lastCardPose.vertical, clamp(-gesture.startY * metersPerPixel, -CARD_HEIGHT_METERS * 1.25, CARD_HEIGHT_METERS * 1.25)),
+      );
       const direction = normalizeVec3(
         addVec3(
-          addVec3(scaleVec3(lastCardPose.forward, 1.28), scaleVec3(lastCardPose.right, gesture.unitX * 0.62)),
-          scaleVec3(lastCardPose.vertical, screenLift * 0.46 + 0.06),
+          addVec3(scaleVec3(lastCardPose.forward, 1.16 + clamp(throwSpeed * 0.035, 0, 0.3)), scaleVec3(lastCardPose.right, gesture.unitX * 0.82)),
+          scaleVec3(lastCardPose.vertical, screenLift * 0.72 + 0.08),
         ),
       );
-      const velocity = addVec3(scaleVec3(direction, throwSpeed), scaleVec3(lastCardPose.vertical, screenLift * 0.22));
+      const offsetCarry = addVec3(scaleVec3(lastCardPose.right, gesture.startX * metersPerPixel * 1.4), scaleVec3(lastCardPose.vertical, -gesture.startY * metersPerPixel * 1.4));
+      const velocity = addVec3(addVec3(scaleVec3(direction, throwSpeed), scaleVec3(lastCardPose.vertical, screenLift * 0.32)), offsetCarry);
       const normal = normalizeVec3(crossVec3(lastCardPose.right, lastCardPose.vertical));
 
       worldCards = [
@@ -643,7 +917,7 @@ export async function createArEngine({
         {
           key: nextWorldCardKey,
           card,
-          position: addVec3(lastCardPose.center, scaleVec3(lastCardPose.forward, 0.035)),
+          position: addVec3(addVec3(lastCardPose.center, releaseOffset), scaleVec3(lastCardPose.forward, 0.025)),
           velocity,
           right: lastCardPose.right,
           vertical: lastCardPose.vertical,
@@ -706,14 +980,14 @@ export async function createArEngine({
         card.tumbleVelocity *= Math.max(0, 1 - 0.88 * dt);
 
         if (card.position.y <= WORLD_FLOOR_Y) {
-          if (Math.hypot(card.velocity.x, card.velocity.y, card.velocity.z) < 0.72 || card.age > 1.2) {
+          if (Math.hypot(card.velocity.x, card.velocity.y, card.velocity.z) < 0.46 || card.age > 3.2) {
             settleWorldCard(card);
           } else {
             card.position.y = WORLD_FLOOR_Y;
-            card.velocity.y = Math.abs(card.velocity.y) * 0.18;
-            card.velocity.x *= 0.72;
-            card.velocity.z *= 0.72;
-            card.tumbleVelocity *= 0.5;
+            card.velocity.y = Math.abs(card.velocity.y) * 0.12;
+            card.velocity.x *= 0.82;
+            card.velocity.z *= 0.82;
+            card.tumbleVelocity *= 0.64;
           }
         }
       }
@@ -807,15 +1081,13 @@ export async function createArEngine({
         const viewProjection = multiplyMatrix4(view.projectionMatrix, viewMatrix);
 
         for (const worldCard of worldCards) {
-          const faceColor = hslToRgb(worldCard.card.color.hue, worldCard.card.color.saturation, worldCard.card.color.lightness);
-          const borderModel = orientedPlaneMatrix(
-            worldCard.position,
-            worldCard.right,
-            worldCard.vertical,
-            CARD_WIDTH_METERS * 1.055,
-            CARD_HEIGHT_METERS * 1.055,
-          );
-          const faceModel = orientedPlaneMatrix(
+          const texture = getCardTexture(worldCard.card);
+
+          if (!texture) {
+            continue;
+          }
+
+          const model = orientedPlaneMatrix(
             addVec3(worldCard.position, scaleVec3(worldCard.normal, 0.004)),
             worldCard.right,
             worldCard.vertical,
@@ -823,9 +1095,8 @@ export async function createArEngine({
             CARD_HEIGHT_METERS,
           );
 
-          drawPlane(borderModel, viewProjection, [0.035, 0.035, 0.04], 0.92);
-          drawPlane(faceModel, viewProjection, faceColor, 0.98);
-          drawnObjects += 2;
+          drawTexturedPlane(model, viewProjection, texture);
+          drawnObjects += 1;
         }
       }
 
@@ -840,6 +1111,10 @@ export async function createArEngine({
     const cleanup = () => {
       running = false;
       window.removeEventListener("resize", resizeCanvas);
+      for (const texture of textureCache.values()) {
+        gl.deleteTexture(texture);
+      }
+      textureCache.clear();
       canvas.remove();
     };
 

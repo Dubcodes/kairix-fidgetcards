@@ -5,6 +5,7 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  memo,
   useRef,
   useState,
   type CSSProperties,
@@ -743,7 +744,7 @@ function CardEmoji({ mark }: { mark: EmojiMark | null }) {
   );
 }
 
-function CardFace({ card }: { card: StackCard }) {
+const CardFace = memo(function CardFace({ card }: { card: StackCard }) {
   return (
     <>
       <CardTexture card={card} kind={card.textureKind} />
@@ -757,7 +758,7 @@ function CardFace({ card }: { card: StackCard }) {
       <CardFinish card={card} kind={card.finishKind} />
     </>
   );
-}
+});
 
 function createStackCard(id: number, previousColor: CardColor | undefined, count: number): StackCard {
   const card = {
@@ -811,7 +812,7 @@ function getExitDistance(unitX: number, unitY: number, startX: number, startY: n
 }
 
 function createParticles(card: Card, startX: number, startY: number, nextId: number) {
-  return Array.from({ length: 9 }, (_, index): Particle => {
+  return Array.from({ length: 6 }, (_, index): Particle => {
     const seed = card.id * 389 + index * 29 + nextId;
     const angle = seededBetween(seed, 0, Math.PI * 2);
     const distance = seededBetween(seed + 1, 68, 150);
@@ -985,7 +986,7 @@ export default function App() {
         setGrabOrigin("50% 50%");
       });
       if (!isLookThrow) {
-        setParticles((value) => [...value.slice(-36), ...createParticles(topCard, startX, startY, nextParticleId)]);
+        setParticles((value) => [...value.slice(-24), ...createParticles(topCard, startX, startY, nextParticleId)]);
       }
       setCombo((value) => (now - previousThrowAt < COMBO_WINDOW_MS ? value + 1 : 1));
       vibrate();
@@ -1313,7 +1314,7 @@ export default function App() {
               style={
                 {
                   "--ar-card-tilt": `${arCardTilt}deg`,
-                  "--ar-card-distance": arCardDistance,
+                  "--ar-card-distance": `${arCardDistance}`,
                 } as CSSProperties
               }
               aria-label="AR card stack"

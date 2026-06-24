@@ -202,7 +202,7 @@ button {
 
 .arCard {
   position: absolute;
-  width: clamp(172px, calc(42vw / var(--ar-card-distance, 0.82)), 336px);
+  width: clamp(110px, calc(28vw / var(--ar-card-distance, 0.82)), 220px);
   aspect-ratio: 5 / 7;
   border: 1px solid;
   border-radius: clamp(13px, 2.4vw, 22px);
