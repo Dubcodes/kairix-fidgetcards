@@ -133,7 +133,7 @@ const MIN_FLIGHT_DURATION = 0.22;
 const MAX_FLIGHT_DURATION = 3.25;
 const AR_CARD_ANGLE = 54;
 const AR_DEFAULT_CARD_DISTANCE = 0.82;
-const AR_DEFAULT_CARD_TILT = 8;
+const AR_DEFAULT_CARD_TILT = 56;
 const EMOJI_POOL = [
   "✨",
   "🌈",
@@ -952,7 +952,28 @@ export default function App() {
         rotate.set(0);
         setFlyingCards((value) => {
           if (isLookThrow) {
-            return value.filter((card) => card.flightMode !== "look");
+            const nextCard: FlyingCard = {
+              ...topCard,
+              flightMode: "look",
+              flightId: nextFlightId,
+              transformOrigin: currentGrabOrigin,
+              startX,
+              startY,
+              startZ: 0,
+              startRotate,
+              startRotateX,
+              startRotateY,
+              targetRotateX,
+              targetRotateY,
+              targetScale,
+              targetX,
+              targetY,
+              targetZ,
+              targetRotate: spin,
+              duration,
+            };
+
+            return [...value.filter((card) => card.flightMode !== "look"), nextCard];
           }
 
           const nextCard: FlyingCard = {
@@ -1308,8 +1329,102 @@ export default function App() {
             </div>
           ) : null}
           {isArReady ? (
+            <div
+              className="arCardStage"
+              style={
+                {
+                  "--ar-card-tilt": `${arCardTilt}deg`,
+                  "--ar-card-distance": arCardDistance,
+                } as CSSProperties
+              }
+              aria-label="AR card stack"
+            >
+              {cards.map((card, index) => {
+                const isTop = index === cards.length - 1;
+                const depth = cards.length - 1 - index;
+
+                return (
+                  <motion.div
+                    key={card.id}
+                    className="arCard"
+                    drag={isTop}
+                    dragMomentum={false}
+                    dragElastic={0.12}
+                    onPointerDown={isTop ? captureGrabPoint : undefined}
+                    onDrag={isTop ? (_, info) => rotateDuringDrag(info) : undefined}
+                    onDragEnd={(_, info) => throwCard(info)}
+                    animate={isTop ? controls : undefined}
+                    transition={{ type: "spring", stiffness: 360, damping: 32, mass: 0.75 }}
+                    style={{
+                      x: isTop ? x : depth * 5,
+                      y: isTop ? y : depth * 8,
+                      z: isTop ? 0 : depth * -10,
+                      rotate: isTop ? rotate : depth * -1.3,
+                      rotateX: arCardTilt,
+                      transformOrigin: isTop ? grabOrigin : "center center",
+                      background: cardBackground(card, card.isGradient),
+                      borderColor: colorToCss(card.color, 12, -18),
+                      boxShadow: isTop
+                        ? "0 28px 80px rgba(0, 0, 0, 0.26), 0 1px 0 rgba(255, 255, 255, 0.32) inset"
+                        : "0 16px 45px rgba(0, 0, 0, 0.18)",
+                      zIndex: index + 1,
+                      scale: isTop ? 1 : 1 - depth * 0.035,
+                    }}
+                    whileTap={isTop ? { scale: 0.985, cursor: "grabbing" } : undefined}
+                  >
+                    <CardFace card={card} />
+                  </motion.div>
+                );
+              })}
+
+              {flyingCards
+                .filter((card) => card.flightMode === "look")
+                .map((card) => (
+                  <motion.div
+                    key={card.flightId}
+                    className="arCard arFlyingCard"
+                    initial={{
+                      x: card.startX,
+                      y: card.startY,
+                      z: card.startZ,
+                      rotate: card.startRotate,
+                      rotateX: card.startRotateX,
+                      rotateY: card.startRotateY,
+                      scale: 1,
+                      opacity: 1,
+                    }}
+                    animate={{
+                      x: card.targetX,
+                      y: card.targetY,
+                      z: card.targetZ,
+                      rotate: card.targetRotate,
+                      rotateX: card.targetRotateX,
+                      rotateY: card.targetRotateY,
+                      scale: card.targetScale,
+                      opacity: 0.92,
+                    }}
+                    transition={{
+                      duration: card.duration,
+                      ease: "linear",
+                    }}
+                    onAnimationComplete={() => {
+                      setFlyingCards((value) => value.filter((flyingCard) => flyingCard.flightId !== card.flightId));
+                    }}
+                    style={{
+                      background: cardBackground(card, card.isGradient),
+                      borderColor: colorToCss(card.color, 12, -18),
+                      boxShadow: "0 28px 80px rgba(0, 0, 0, 0.26), 0 1px 0 rgba(255, 255, 255, 0.32) inset",
+                      transformOrigin: card.transformOrigin,
+                    }}
+                  >
+                    <CardFace card={card} />
+                  </motion.div>
+                ))}
+            </div>
+          ) : null}
+          {isArReady ? (
             <div className="arProofPanel">
-              <div className="arProofTitle">Floor plane + phone card test</div>
+              <div className="arProofTitle">Phone-attached card test</div>
               <div className="arControls" aria-label="AR card controls">
                 <label className="arControl">
                   <span>Distance {arCardDistance.toFixed(2)}m</span>
@@ -1326,8 +1441,8 @@ export default function App() {
                   <span>Tilt {arCardTilt.toFixed(0)}deg</span>
                   <input
                     type="range"
-                    min="-55"
-                    max="55"
+                    min="-75"
+                    max="75"
                     step="1"
                     value={arCardTilt}
                     onChange={(event) => setArCardTilt(Number(event.currentTarget.value))}

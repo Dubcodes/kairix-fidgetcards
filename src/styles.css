@@ -177,20 +177,6 @@ button {
   z-index: 8;
 }
 
-.lookMode .card {
-  background: transparent !important;
-  border-color: transparent !important;
-  box-shadow: none !important;
-  opacity: 0;
-}
-
-.lookMode .cardLines,
-.lookMode .cardTexture,
-.lookMode .cardFinish,
-.lookMode .cardEmoji {
-  display: none;
-}
-
 .arProofPanel {
   position: fixed;
   left: max(14px, env(safe-area-inset-left));
@@ -200,6 +186,39 @@ button {
   display: grid;
   gap: 8px;
   pointer-events: auto;
+}
+
+.arCardStage {
+  position: fixed;
+  inset: 0;
+  z-index: 56;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  perspective: 1040px;
+  perspective-origin: 50% 54%;
+  transform-style: preserve-3d;
+}
+
+.arCard {
+  position: absolute;
+  width: clamp(172px, calc(42vw / var(--ar-card-distance, 0.82)), 336px);
+  aspect-ratio: 5 / 7;
+  border: 1px solid;
+  border-radius: clamp(13px, 2.4vw, 22px);
+  cursor: grab;
+  overflow: hidden;
+  pointer-events: auto;
+  transform-style: preserve-3d;
+  backface-visibility: hidden;
+  contain: layout paint;
+  will-change: transform;
+  touch-action: none;
+}
+
+.arFlyingCard {
+  z-index: 40;
+  pointer-events: none;
 }
 
 .arProofTitle {

@@ -9,7 +9,7 @@ export type ArCard = {
   color: ArCardColor;
 };
 
-export const AR_PROOF_BUILD = "ar-phone-card-2026-06-24-01";
+export const AR_PROOF_BUILD = "ar-phone-card-dom-2026-06-24-01";
 
 export type ArCardControls = {
   cardDistance: number;
@@ -120,7 +120,7 @@ const CARD_HEIGHT_METERS = 0.58;
 const CARD_VERTICAL_OFFSET_METERS = -0.04;
 const DEFAULT_CARD_CONTROLS: ArCardControls = {
   cardDistance: 0.82,
-  cardTiltDeg: 8,
+  cardTiltDeg: 56,
 };
 
 function clamp(value: number, min: number, max: number) {
@@ -524,7 +524,6 @@ export async function createArEngine({
       throw new Error("local-floor reference space unavailable");
     }
 
-    const renderer = createRenderer(gl);
     let frameHandle: number | null = null;
     let running = true;
     let ended = false;
@@ -544,20 +543,8 @@ export async function createArEngine({
     const setConfig = (config: Partial<ArCardControls>) => {
       cardControls = {
         cardDistance: clamp(config.cardDistance ?? cardControls.cardDistance, 0.3, 1.8),
-        cardTiltDeg: clamp(config.cardTiltDeg ?? cardControls.cardTiltDeg, -55, 55),
+        cardTiltDeg: clamp(config.cardTiltDeg ?? cardControls.cardTiltDeg, -75, 75),
       };
-    };
-
-    const drawPlane = (modelMatrix: Float32Array, viewProjection: Float32Array, color: readonly [number, number, number], alpha: number) => {
-      const mvp = multiplyMatrix4(viewProjection, modelMatrix);
-
-      gl.useProgram(renderer.program);
-      gl.bindBuffer(gl.ARRAY_BUFFER, renderer.vertexBuffer);
-      gl.enableVertexAttribArray(renderer.positionLocation);
-      gl.vertexAttribPointer(renderer.positionLocation, 3, gl.FLOAT, false, 0, 0);
-      gl.uniformMatrix4fv(renderer.mvpLocation, false, mvp);
-      gl.uniform4f(renderer.colorLocation, color[0], color[1], color[2], alpha);
-      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     };
 
     const emitDebug = (time: number, viewCount: number, drawnObjects: number, message: string) => {
@@ -632,43 +619,20 @@ export async function createArEngine({
 
       for (const view of pose.views) {
         const viewport = layer.getViewport(view);
-        const viewMatrix = view.transform?.inverse?.matrix;
 
-        if (!viewport || !viewMatrix || !planeCenter) {
+        if (!viewport || !planeCenter) {
           continue;
         }
 
         gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-        const viewProjection = multiplyMatrix4(view.projectionMatrix, viewMatrix);
-        const model = floorPlaneMatrix(planeCenter, planeForward, PLANE_SIZE_METERS);
-        drawPlane(model, viewProjection, [1, 1, 1], 0.78);
-        drawnObjects += 1;
-
-        if (cardPose && activeCard) {
-          const borderCenter = addVec3(cardPose.center, scaleVec3(cardPose.forward, 0.006));
-          const faceCenter = addVec3(cardPose.center, scaleVec3(cardPose.forward, -0.002));
-          const borderModel = orientedPlaneMatrix(
-            borderCenter,
-            cardPose.right,
-            cardPose.vertical,
-            CARD_WIDTH_METERS * 1.055,
-            CARD_HEIGHT_METERS * 1.055,
-          );
-          const faceModel = orientedPlaneMatrix(faceCenter, cardPose.right, cardPose.vertical, CARD_WIDTH_METERS, CARD_HEIGHT_METERS);
-          const color = hslToRgb(activeCard.color.hue, activeCard.color.saturation, activeCard.color.lightness);
-
-          drawPlane(borderModel, viewProjection, [0.03, 0.03, 0.035], 0.9);
-          drawPlane(faceModel, viewProjection, color, 0.96);
-          drawnObjects += 2;
-        }
       }
 
       emitDebug(
         time,
         pose.views.length,
         drawnObjects,
-        planeCenter ? "Drawing floor plane and phone-attached card" : "Waiting to lock floor plane",
+        planeCenter ? "AR tracking active; DOM cards attached to phone" : "Waiting to lock floor plane",
       );
     };
 
