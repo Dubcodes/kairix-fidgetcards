@@ -1,7 +1,6 @@
 services:
   fidget-cards:
-    build:
-      context: .
+    image: ghcr.io/dubcodes/kairix-fidgetcards:latest
     container_name: fidget-cards
     ports:
       - "3095:80"

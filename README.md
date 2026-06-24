@@ -16,7 +16,7 @@ A tiny full-screen fidget app made with Vite, React, TypeScript, and Framer Moti
 - Random emoji marks start appearing at 200, and the available emoji pool gains another randomly selected emoji every 100 cards after that
 - Fast repeated throws build a small combo badge, and successful throws create subtle color particles
 - Small counter, reset icon, and counter show/hide control
-- Long-press the eye icon on a phone to enter look-throw mode: WebXR AR is used where available, otherwise the app falls back to camera passthrough
+- Long-press the eye icon on a phone to enter WebXR AR test mode
 - Keyboard shortcuts: arrow keys or WASD to throw, Space/Enter for a random throw, R to reset, C to toggle controls, F for fullscreen
 - Mobile haptic vibration on successful throws where supported
 - Dockerized static build served by Nginx on container port `80`
@@ -37,10 +37,16 @@ npm run preview
 
 ## Docker
 
-Build and run with Docker Compose:
+The normal deployment image is built by GitHub Actions and published to GitHub Container Registry:
+
+```text
+ghcr.io/dubcodes/kairix-fidgetcards:latest
+```
+
+Run the published image with Docker Compose:
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
 Open:
@@ -51,7 +57,29 @@ http://localhost:3095
 
 The container serves the app on port `80`, with the compose file mapping host port `3095` to container port `80`.
 
-Camera passthrough and WebXR generally require a secure browser context on phones. For phone testing outside `localhost`, serve the app through HTTPS or a secure reverse proxy/tunnel.
+WebXR generally requires a secure browser context on phones. For phone testing outside `localhost`, serve the app through HTTPS or a secure reverse proxy/tunnel.
+
+To build locally instead of using the published image:
+
+```bash
+docker build -t fidget-cards:local .
+docker run --rm -p 3095:80 fidget-cards:local
+```
+
+## GitHub Image Build
+
+This repo includes `.github/workflows/docker-publish.yml`. Every push to `main` builds the Docker image and publishes:
+
+- `ghcr.io/dubcodes/kairix-fidgetcards:latest`
+- `ghcr.io/dubcodes/kairix-fidgetcards:<commit-sha>`
+
+After the first workflow run, check the package page in GitHub and make the container package public if Portainer needs unauthenticated pulls:
+
+1. Open the repo on GitHub.
+2. Go to **Packages**.
+3. Open `kairix-fidgetcards`.
+4. Go to **Package settings**.
+5. Set visibility to **Public**.
 
 ## Temporary TryCloudflare URL
 
@@ -60,7 +88,7 @@ The compose file includes an optional `trycloudflared` service for quick phone t
 Enable it locally with:
 
 ```bash
-COMPOSE_PROFILES=trycloudflare docker compose up -d --build
+COMPOSE_PROFILES=trycloudflare docker compose up -d
 ```
 
 Then get the temporary public URL from the tunnel logs:
@@ -82,14 +110,13 @@ COMPOSE_PROFILES=trycloudflare
 1. In Portainer, go to **Stacks**.
 2. Select **Add stack**.
 3. Name the stack `fidget-cards`.
-4. Choose **Repository** if this folder is in a Git repo, or **Web editor** if pasting the compose file manually.
+4. Choose **Repository** and point Portainer at `https://github.com/Dubcodes/kairix-fidgetcards.git`, or choose **Web editor** and paste the compose file manually.
 5. Use this compose content:
 
 ```yaml
 services:
   fidget-cards:
-    build:
-      context: .
+    image: ghcr.io/dubcodes/kairix-fidgetcards:latest
     container_name: fidget-cards
     ports:
       - "3095:80"
@@ -115,4 +142,4 @@ COMPOSE_PROFILES=trycloudflare
 7. Deploy the stack.
 8. Visit `http://YOUR_SERVER_IP:3095`, or open the `trycloudflared` container logs and use the generated `https://...trycloudflare.com` URL for phone camera testing.
 
-If Portainer is deploying from a Git repository, keep the `Dockerfile`, `nginx.conf`, `package.json`, `src/`, and `index.html` files in the repository root so the build context is correct.
+When you push to `main`, GitHub builds the new image. In Portainer, redeploy/recreate the stack with pulling enabled so it grabs the updated `latest` image.
