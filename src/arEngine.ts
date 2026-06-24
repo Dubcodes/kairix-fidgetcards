@@ -23,7 +23,7 @@ export type ArCard = {
   } | null;
 };
 
-export const AR_PROOF_BUILD = "ar-world-card-physics-2026-06-25-01";
+export const AR_PROOF_BUILD = "ar-world-card-handoff-2026-06-25-01";
 
 export type ArCardControls = {
   cardDistance: number;
@@ -37,6 +37,9 @@ export type ArThrowGesture = {
   spin: number;
   startX: number;
   startY: number;
+  rotateDeg: number;
+  grabX: number;
+  grabY: number;
 };
 
 export type ArDebugState = {
@@ -157,7 +160,7 @@ const AR_CARD_MAX_PX = 220;
 const AR_CARD_VIEWPORT_SCALE = 0.28;
 const DEFAULT_CARD_CONTROLS: ArCardControls = {
   cardDistance: 0.82,
-  cardTiltDeg: 56,
+  cardTiltDeg: 34,
 };
 
 function clamp(value: number, min: number, max: number) {
@@ -911,6 +914,10 @@ export async function createArEngine({
       const offsetCarry = addVec3(scaleVec3(lastCardPose.right, gesture.startX * metersPerPixel * 1.4), scaleVec3(lastCardPose.vertical, -gesture.startY * metersPerPixel * 1.4));
       const velocity = addVec3(addVec3(scaleVec3(direction, throwSpeed), scaleVec3(lastCardPose.vertical, screenLift * 0.32)), offsetCarry);
       const normal = normalizeVec3(crossVec3(lastCardPose.right, lastCardPose.vertical));
+      const releaseRotation = (gesture.rotateDeg * Math.PI) / 180;
+      const releaseRight = rotateVecAroundAxis(lastCardPose.right, normal, releaseRotation);
+      const releaseVertical = rotateVecAroundAxis(lastCardPose.vertical, normal, releaseRotation);
+      const grabTorque = (gesture.grabX * gesture.unitY - gesture.grabY * gesture.unitX) / Math.max(1, arCardPixelWidth(cardControls) * 0.5);
 
       worldCards = [
         ...worldCards.slice(-(WORLD_CARD_LIMIT - 1)),
@@ -919,10 +926,10 @@ export async function createArEngine({
           card,
           position: addVec3(addVec3(lastCardPose.center, releaseOffset), scaleVec3(lastCardPose.forward, 0.025)),
           velocity,
-          right: lastCardPose.right,
-          vertical: lastCardPose.vertical,
+          right: releaseRight,
+          vertical: releaseVertical,
           normal,
-          spinVelocity: clamp(gesture.spin * 0.09 + gesture.unitX * 3.2, -10, 10),
+          spinVelocity: clamp(gesture.spin * 0.1 + gesture.unitX * 3.2 + grabTorque * 4.4, -12, 12),
           tumbleVelocity: clamp(throwSpeed * 1.15 + Math.abs(gesture.unitY) * 1.2, 0.6, 7.2),
           age: 0,
           settled: false,

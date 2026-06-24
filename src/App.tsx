@@ -132,9 +132,9 @@ const COMBO_WINDOW_MS = 850;
 const EYE_LONG_PRESS_MS = 620;
 const MIN_FLIGHT_DURATION = 0.22;
 const MAX_FLIGHT_DURATION = 3.25;
-const AR_CARD_ANGLE = 54;
+const AR_CARD_ANGLE = 34;
 const AR_DEFAULT_CARD_DISTANCE = 0.82;
-const AR_DEFAULT_CARD_TILT = 56;
+const AR_DEFAULT_CARD_TILT = 34;
 const EMOJI_POOL = [
   "✨",
   "🌈",
@@ -253,11 +253,12 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
-function rotationFromGrab(grab: Point, offsetX: number, offsetY: number) {
+function rotationFromGrab(grab: Point, offsetX: number, offsetY: number, velocityX = 0, velocityY = 0) {
   const torque = (grab.x * offsetY - grab.y * offsetX) / 2600;
-  const drift = offsetX / 42;
+  const velocityTorque = (grab.x * velocityY - grab.y * velocityX) / 18000;
+  const drift = offsetX / 52;
 
-  return clamp(torque + drift, -38, 38);
+  return clamp(torque + velocityTorque + drift, -48, 48);
 }
 
 function getLineCount(count: number, cardId: number) {
@@ -943,7 +944,17 @@ export default function App() {
       lastThrowAt.current = now;
 
       if (isLookThrow) {
-        arEngineRef.current?.throwCard(topCard, { unitX, unitY, throwSpeed, spin, startX, startY });
+        arEngineRef.current?.throwCard(topCard, {
+          unitX,
+          unitY,
+          throwSpeed,
+          spin,
+          startX,
+          startY,
+          rotateDeg: startRotate,
+          grabX: grabPoint.current.x,
+          grabY: grabPoint.current.y,
+        });
       }
 
       flushSync(() => {
@@ -1019,8 +1030,8 @@ export default function App() {
 
       const directionX = velocityX || offsetX || (Math.random() > 0.5 ? 1 : -1);
       const directionY = velocityY || offsetY || -1;
-      const angularVelocity = distance > 0 ? (grabPoint.current.x * velocityY - grabPoint.current.y * velocityX) / 6200 : 0;
-      const spin = clamp(rotate.get() + angularVelocity + velocityX / 140, -92, 92);
+      const angularVelocity = distance > 0 ? (grabPoint.current.x * velocityY - grabPoint.current.y * velocityX) / 4600 : 0;
+      const spin = clamp(rotate.get() + angularVelocity + velocityX / 170, -118, 118);
 
       completeThrow(directionX, directionY, velocity || KEYBOARD_THROW_VELOCITY, spin, offsetX, offsetY);
     },
@@ -1045,7 +1056,7 @@ export default function App() {
   }
 
   function rotateDuringDrag(info: PanInfo) {
-    rotate.set(rotationFromGrab(grabPoint.current, info.offset.x, info.offset.y));
+    rotate.set(rotationFromGrab(grabPoint.current, info.offset.x, info.offset.y, info.velocity.x, info.velocity.y));
   }
 
   async function toggleFullscreen() {
@@ -1350,7 +1361,7 @@ export default function App() {
                       zIndex: index + 1,
                       scale: isTop ? 1 : 1 - depth * 0.035,
                     }}
-                    whileTap={isTop ? { scale: 0.985, cursor: "grabbing" } : undefined}
+                    whileTap={isTop ? { cursor: "grabbing" } : undefined}
                   >
                     <CardFace card={card} />
                   </motion.div>
@@ -1429,7 +1440,7 @@ export default function App() {
                 zIndex: index + 1,
                 scale: isTop ? 1 : 1 - depth * 0.035,
               }}
-              whileTap={isTop ? { scale: 0.985, cursor: "grabbing" } : undefined}
+              whileTap={isTop ? { cursor: "grabbing" } : undefined}
             >
               <CardFace card={card} />
             </motion.div>
