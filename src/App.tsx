@@ -86,6 +86,13 @@ type Point = {
   y: number;
 };
 
+type DragSample = {
+  time: number;
+  x: number;
+  y: number;
+  rotate: number;
+};
+
 type EdgePoint = Point & {
   edge: number;
 };
@@ -131,7 +138,7 @@ const KEYBOARD_THROW_VELOCITY = 980;
 const COMBO_WINDOW_MS = 850;
 const EYE_LONG_PRESS_MS = 620;
 const MIN_FLIGHT_DURATION = 0.22;
-const MAX_FLIGHT_DURATION = 3.25;
+const MAX_FLIGHT_DURATION = 3.8;
 const AR_CARD_ANGLE = 34;
 const AR_DEFAULT_CARD_DISTANCE = 0.82;
 const AR_DEFAULT_CARD_TILT = 34;
@@ -254,11 +261,12 @@ function clamp(value: number, min: number, max: number) {
 }
 
 function rotationFromGrab(grab: Point, offsetX: number, offsetY: number, velocityX = 0, velocityY = 0) {
-  const torque = (grab.x * offsetY - grab.y * offsetX) / 2600;
-  const velocityTorque = (grab.x * velocityY - grab.y * velocityX) / 18000;
-  const drift = offsetX / 52;
+  const lever = Math.max(20, Math.hypot(grab.x, grab.y));
+  const torque = (grab.x * offsetY - grab.y * offsetX) / (lever * 18);
+  const velocityTorque = (grab.x * velocityY - grab.y * velocityX) / (lever * 120);
+  const drift = offsetX / 68;
 
-  return clamp(torque + velocityTorque + drift, -48, 48);
+  return clamp(torque + velocityTorque + drift, -62, 62);
 }
 
 function getLineCount(count: number, cardId: number) {
@@ -851,6 +859,7 @@ export default function App() {
   const lastThrowAt = useRef(0);
   const grabPoint = useRef<Point>({ x: 0, y: 0 });
   const grabOriginRef = useRef("50% 50%");
+  const dragSamplesRef = useRef<DragSample[]>([]);
   const eyeHoldTimer = useRef<number | null>(null);
   const eyeLongPressed = useRef(false);
   const arEngineRef = useRef<ArEngine | null>(null);
@@ -903,14 +912,78 @@ export default function App() {
     return () => window.clearTimeout(timeout);
   }, [combo]);
 
+  function recordDragSample(offsetX: number, offsetY: number, rotation: number) {
+    const now = performance.now();
+    const samples = [...dragSamplesRef.current, { time: now, x: offsetX, y: offsetY, rotate: rotation }]
+      .filter((sample) => now - sample.time <= 180)
+      .slice(-8);
+
+    dragSamplesRef.current = samples;
+  }
+
+  function estimateRelease(info: PanInfo) {
+    const now = performance.now();
+    const finalRotation = rotationFromGrab(grabPoint.current, info.offset.x, info.offset.y, info.velocity.x, info.velocity.y);
+    const samples = [
+      ...dragSamplesRef.current,
+      {
+        time: now,
+        x: info.offset.x,
+        y: info.offset.y,
+        rotate: finalRotation,
+      },
+    ]
+      .filter((sample) => now - sample.time <= 180)
+      .slice(-8);
+    const latest = samples[samples.length - 1] ?? {
+      time: now,
+      x: info.offset.x,
+      y: info.offset.y,
+      rotate: finalRotation,
+    };
+
+    dragSamplesRef.current = samples;
+
+    const earliest =
+      [...samples].reverse().find((sample) => latest.time - sample.time >= 28) ??
+      samples[0] ??
+      latest;
+    const deltaSeconds = Math.max(0.016, (latest.time - earliest.time) / 1000);
+    const sampledVelocityX = (latest.x - earliest.x) / deltaSeconds;
+    const sampledVelocityY = (latest.y - earliest.y) / deltaSeconds;
+    const sampledAngularVelocity = (latest.rotate - earliest.rotate) / deltaSeconds;
+    const fallbackVelocity = Math.hypot(info.velocity.x, info.velocity.y);
+    const sampledVelocity = Math.hypot(sampledVelocityX, sampledVelocityY);
+
+    return {
+      offsetX: latest.x,
+      offsetY: latest.y,
+      rotate: latest.rotate,
+      velocityX: sampledVelocity > 24 ? sampledVelocityX : info.velocity.x,
+      velocityY: sampledVelocity > 24 ? sampledVelocityY : info.velocity.y,
+      angularVelocity: Math.abs(sampledAngularVelocity) > 8 ? sampledAngularVelocity : 0,
+      velocity: sampledVelocity > 24 ? sampledVelocity : fallbackVelocity,
+    };
+  }
+
   const completeThrow = useCallback(
-    (directionX: number, directionY: number, velocity: number, spin: number, startX = 0, startY = 0) => {
+    (
+      directionX: number,
+      directionY: number,
+      velocity: number,
+      angularVelocity: number,
+      startX = 0,
+      startY = 0,
+      releaseRotate = rotate.get(),
+      releaseVelocityX = directionX,
+      releaseVelocityY = directionY,
+    ) => {
       const magnitude = Math.max(1, Math.hypot(directionX, directionY));
       const unitX = directionX / magnitude;
       const unitY = directionY / magnitude;
       const throwSpeed = clamp(velocity || Math.hypot(startX, startY) * 3.2, 220, 5200);
       const isLookThrow = lookMode === "ar" && arStatus === "ready";
-      const speedBoost = clamp(throwSpeed / 3000, 0.88, 1.28);
+      const speedBoost = clamp(throwSpeed / 2500, 0.92, 1.55);
       const exitDistance = getExitDistance(unitX, unitY, startX, startY) * speedBoost;
       const viewportHeight = window.innerHeight || 720;
       const forwardDistance = isLookThrow
@@ -922,16 +995,19 @@ export default function App() {
         ? clamp(startY + unitY * lookLateralDistance * 0.35 + forwardDistance * 0.07, -viewportHeight * 0.32, viewportHeight * 0.78)
         : unitY * exitDistance;
       const targetZ = isLookThrow ? -forwardDistance : 0;
-      const pixelsPerSecond = clamp(throwSpeed * (isLookThrow ? 0.62 : 0.92), 260, 4700);
+      const pixelsPerSecond = clamp(throwSpeed * (isLookThrow ? 0.7 : 0.88), 260, 4700);
       const duration = isLookThrow
         ? clamp(forwardDistance / pixelsPerSecond, 0.95, 6.4)
         : clamp(exitDistance / pixelsPerSecond, MIN_FLIGHT_DURATION, MAX_FLIGHT_DURATION);
-      const startRotate = rotate.get();
+      const startRotate = releaseRotate;
       const startRotateX = isLookThrow ? AR_CARD_ANGLE : 0;
       const startRotateY = 0;
       const targetRotateX = isLookThrow ? clamp(AR_CARD_ANGLE + 18 + throwSpeed / 260, 58, 88) : 0;
       const targetRotateY = isLookThrow ? clamp(-unitX * 42, -54, 54) : 0;
       const targetScale = isLookThrow ? clamp(920 / (920 + forwardDistance * 0.62), 0.24, 0.78) : 0.98;
+      const targetRotate = isLookThrow
+        ? startRotate
+        : startRotate + clamp(angularVelocity * duration * 0.72 + releaseVelocityX / 120, -780, 780);
       const nextFlightId = flightId.current + 1;
       const nextThrown = thrownRef.current + 1;
       const now = Date.now();
@@ -948,12 +1024,14 @@ export default function App() {
           unitX,
           unitY,
           throwSpeed,
-          spin,
           startX,
           startY,
           rotateDeg: startRotate,
           grabX: grabPoint.current.x,
           grabY: grabPoint.current.y,
+          releaseVelocityX,
+          releaseVelocityY,
+          angularVelocityDeg: angularVelocity,
         });
       }
 
@@ -984,7 +1062,7 @@ export default function App() {
             targetX,
             targetY,
             targetZ,
-            targetRotate: spin,
+            targetRotate,
             duration,
           };
           const nextCards = [...value, nextCard];
@@ -1018,7 +1096,14 @@ export default function App() {
   }, [controls, rotate, x, y]);
 
   const throwFromInput = useCallback(
-    async (velocityX: number, velocityY: number, offsetX = 0, offsetY = 0) => {
+    async (
+      velocityX: number,
+      velocityY: number,
+      offsetX = 0,
+      offsetY = 0,
+      releaseRotate = rotate.get(),
+      angularVelocity = 0,
+    ) => {
       const velocity = Math.hypot(velocityX, velocityY);
       const distance = Math.hypot(offsetX, offsetY);
       const shouldThrow = velocity > THROW_VELOCITY || distance > THROW_OFFSET;
@@ -1030,16 +1115,36 @@ export default function App() {
 
       const directionX = velocityX || offsetX || (Math.random() > 0.5 ? 1 : -1);
       const directionY = velocityY || offsetY || -1;
-      const angularVelocity = distance > 0 ? (grabPoint.current.x * velocityY - grabPoint.current.y * velocityX) / 4600 : 0;
-      const spin = clamp(rotate.get() + angularVelocity + velocityX / 170, -118, 118);
+      const contactAngularVelocity =
+        distance > 0 ? (grabPoint.current.x * velocityY - grabPoint.current.y * velocityX) / 14 : 0;
+      const releaseAngularVelocity = clamp(angularVelocity + contactAngularVelocity, -960, 960);
 
-      completeThrow(directionX, directionY, velocity || KEYBOARD_THROW_VELOCITY, spin, offsetX, offsetY);
+      completeThrow(
+        directionX,
+        directionY,
+        velocity || KEYBOARD_THROW_VELOCITY,
+        releaseAngularVelocity,
+        offsetX,
+        offsetY,
+        releaseRotate,
+        velocityX,
+        velocityY,
+      );
     },
     [completeThrow, rotate, snapBack],
   );
 
   function throwCard(info: PanInfo) {
-    void throwFromInput(info.velocity.x, info.velocity.y, info.offset.x, info.offset.y);
+    const release = estimateRelease(info);
+
+    void throwFromInput(
+      release.velocityX,
+      release.velocityY,
+      release.offsetX,
+      release.offsetY,
+      release.rotate,
+      release.angularVelocity,
+    );
   }
 
   function captureGrabPoint(event: ReactPointerEvent<HTMLDivElement>) {
@@ -1052,11 +1157,16 @@ export default function App() {
       y: originY - rect.height / 2,
     };
     grabOriginRef.current = `${originX}px ${originY}px`;
+    dragSamplesRef.current = [];
+    recordDragSample(0, 0, rotate.get());
     setGrabOrigin(grabOriginRef.current);
   }
 
   function rotateDuringDrag(info: PanInfo) {
-    rotate.set(rotationFromGrab(grabPoint.current, info.offset.x, info.offset.y, info.velocity.x, info.velocity.y));
+    const nextRotate = rotationFromGrab(grabPoint.current, info.offset.x, info.offset.y, info.velocity.x, info.velocity.y);
+
+    rotate.set(nextRotate);
+    recordDragSample(info.offset.x, info.offset.y, nextRotate);
   }
 
   async function toggleFullscreen() {

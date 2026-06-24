@@ -23,7 +23,7 @@ export type ArCard = {
   } | null;
 };
 
-export const AR_PROOF_BUILD = "ar-world-card-handoff-2026-06-25-01";
+export const AR_PROOF_BUILD = "ar-contact-physics-2026-06-25-01";
 
 export type ArCardControls = {
   cardDistance: number;
@@ -34,12 +34,14 @@ export type ArThrowGesture = {
   unitX: number;
   unitY: number;
   throwSpeed: number;
-  spin: number;
   startX: number;
   startY: number;
   rotateDeg: number;
   grabX: number;
   grabY: number;
+  releaseVelocityX: number;
+  releaseVelocityY: number;
+  angularVelocityDeg: number;
 };
 
 export type ArDebugState = {
@@ -151,7 +153,7 @@ const PLANE_DISTANCE_METERS = 1.7;
 const CARD_WIDTH_METERS = 0.17;
 const CARD_HEIGHT_METERS = 0.238;
 const CARD_VERTICAL_OFFSET_METERS = -0.04;
-const WORLD_CARD_LIMIT = 18;
+const WORLD_CARD_LIMIT = 42;
 const WORLD_GRAVITY = 2.35;
 const WORLD_DRAG = 0.32;
 const WORLD_FLOOR_Y = 0.018;
@@ -898,21 +900,37 @@ export async function createArEngine({
         return;
       }
 
-      const throwSpeed = clamp(gesture.throwSpeed / 560, 1.05, 8.4);
+      const sampledSpeed = Math.hypot(gesture.releaseVelocityX, gesture.releaseVelocityY) || gesture.throwSpeed;
+      const throwSpeed = clamp(sampledSpeed / 560, 1.05, 8.4);
       const screenLift = clamp(-gesture.unitY, -0.45, 1);
       const metersPerPixel = CARD_WIDTH_METERS / arCardPixelWidth(cardControls);
       const releaseOffset = addVec3(
         scaleVec3(lastCardPose.right, clamp(gesture.startX * metersPerPixel, -CARD_WIDTH_METERS * 1.25, CARD_WIDTH_METERS * 1.25)),
         scaleVec3(lastCardPose.vertical, clamp(-gesture.startY * metersPerPixel, -CARD_HEIGHT_METERS * 1.25, CARD_HEIGHT_METERS * 1.25)),
       );
+      const releasePlanarVelocity = addVec3(
+        scaleVec3(lastCardPose.right, gesture.releaseVelocityX * metersPerPixel * 1.35),
+        scaleVec3(lastCardPose.vertical, -gesture.releaseVelocityY * metersPerPixel * 1.35),
+      );
+      const releasePlanarSpeed = Math.hypot(releasePlanarVelocity.x, releasePlanarVelocity.y, releasePlanarVelocity.z);
+      const releaseDirection = releasePlanarSpeed > 0.001 ? normalizeVec3(releasePlanarVelocity) : { x: 0, y: 0, z: 0 };
       const direction = normalizeVec3(
         addVec3(
-          addVec3(scaleVec3(lastCardPose.forward, 1.16 + clamp(throwSpeed * 0.035, 0, 0.3)), scaleVec3(lastCardPose.right, gesture.unitX * 0.82)),
+          addVec3(
+            scaleVec3(lastCardPose.forward, 1.05 + clamp(throwSpeed * 0.04, 0, 0.34)),
+            scaleVec3(releaseDirection, releasePlanarSpeed > 0.001 ? 0.82 : 0),
+          ),
           scaleVec3(lastCardPose.vertical, screenLift * 0.72 + 0.08),
         ),
       );
-      const offsetCarry = addVec3(scaleVec3(lastCardPose.right, gesture.startX * metersPerPixel * 1.4), scaleVec3(lastCardPose.vertical, -gesture.startY * metersPerPixel * 1.4));
-      const velocity = addVec3(addVec3(scaleVec3(direction, throwSpeed), scaleVec3(lastCardPose.vertical, screenLift * 0.32)), offsetCarry);
+      const offsetCarry = addVec3(
+        scaleVec3(lastCardPose.right, gesture.startX * metersPerPixel * 0.72),
+        scaleVec3(lastCardPose.vertical, -gesture.startY * metersPerPixel * 0.72),
+      );
+      const velocity = addVec3(
+        addVec3(addVec3(scaleVec3(direction, throwSpeed), releasePlanarVelocity), scaleVec3(lastCardPose.vertical, screenLift * 0.38)),
+        offsetCarry,
+      );
       const normal = normalizeVec3(crossVec3(lastCardPose.right, lastCardPose.vertical));
       const releaseRotation = (gesture.rotateDeg * Math.PI) / 180;
       const releaseRight = rotateVecAroundAxis(lastCardPose.right, normal, releaseRotation);
@@ -929,7 +947,7 @@ export async function createArEngine({
           right: releaseRight,
           vertical: releaseVertical,
           normal,
-          spinVelocity: clamp(gesture.spin * 0.1 + gesture.unitX * 3.2 + grabTorque * 4.4, -12, 12),
+          spinVelocity: clamp((gesture.angularVelocityDeg * Math.PI) / 180 + gesture.unitX * 2.4 + grabTorque * 4.4, -16, 16),
           tumbleVelocity: clamp(throwSpeed * 1.15 + Math.abs(gesture.unitY) * 1.2, 0.6, 7.2),
           age: 0,
           settled: false,
@@ -938,12 +956,64 @@ export async function createArEngine({
       nextWorldCardKey += 1;
     };
 
+    const findSettledPosition = (card: WorldCard) => {
+      const settledCards = worldCards.filter((candidate) => candidate.settled && candidate.key !== card.key);
+      const minSpacing = CARD_WIDTH_METERS * 0.82;
+      const step = CARD_WIDTH_METERS * 0.72;
+      let bestPosition = card.position;
+      let bestScore = Number.POSITIVE_INFINITY;
+
+      for (let ring = 0; ring <= 5; ring += 1) {
+        const span = ring === 0 ? 0 : ring * step;
+
+        for (let ix = -ring; ix <= ring; ix += 1) {
+          for (let iz = -ring; iz <= ring; iz += 1) {
+            if (ring > 0 && Math.max(Math.abs(ix), Math.abs(iz)) !== ring) {
+              continue;
+            }
+
+            const seed = card.key * 101 + ix * 17 + iz * 29;
+            const candidate = {
+              x: card.position.x + ix * step + seededBetween(seed, -0.018, 0.018),
+              y: WORLD_FLOOR_Y,
+              z: card.position.z + iz * step + seededBetween(seed + 1, -0.018, 0.018),
+            };
+            const nearest = settledCards.reduce((distance, settled) => {
+              return Math.min(distance, Math.hypot(candidate.x - settled.position.x, candidate.z - settled.position.z));
+            }, Number.POSITIVE_INFINITY);
+            const overlapPenalty = nearest < minSpacing ? (minSpacing - nearest) * 20 : 0;
+            const distanceFromImpact = Math.hypot(candidate.x - card.position.x, candidate.z - card.position.z);
+            const score = overlapPenalty + distanceFromImpact + span * 0.08;
+
+            if (score < bestScore) {
+              bestScore = score;
+              bestPosition = candidate;
+            }
+          }
+        }
+
+        if (bestScore < minSpacing * 0.4) {
+          break;
+        }
+      }
+
+      const nearbyCount = settledCards.filter((settled) => Math.hypot(bestPosition.x - settled.position.x, bestPosition.z - settled.position.z) < minSpacing).length;
+
+      return {
+        ...bestPosition,
+        y: WORLD_FLOOR_Y + nearbyCount * 0.0035,
+      };
+    };
+
     const settleWorldCard = (card: WorldCard) => {
       const forward = horizontalOrFallback(card.velocity, planeForward);
-      card.position.y = WORLD_FLOOR_Y;
+      const settleAngle = seededBetween(card.key * 131, -0.62, 0.62);
+      const settledForward = rotateVecAroundAxis(forward, { x: 0, y: 1, z: 0 }, settleAngle);
+
+      card.position = findSettledPosition(card);
       card.velocity = { x: 0, y: 0, z: 0 };
-      card.vertical = forward;
-      card.right = floorRightFromForward(forward);
+      card.vertical = settledForward;
+      card.right = floorRightFromForward(settledForward);
       card.normal = { x: 0, y: 1, z: 0 };
       card.spinVelocity = 0;
       card.tumbleVelocity = 0;
