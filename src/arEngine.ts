@@ -9,7 +9,12 @@ export type ArCard = {
   color: ArCardColor;
 };
 
-export const AR_PROOF_BUILD = "ar-floor-proof-2026-06-24-02";
+export const AR_PROOF_BUILD = "ar-phone-card-2026-06-24-01";
+
+export type ArCardControls = {
+  cardDistance: number;
+  cardTiltDeg: number;
+};
 
 export type ArThrowGesture = {
   unitX: number;
@@ -27,8 +32,11 @@ export type ArDebugState = {
   drawnObjects: number;
   planeLocked: boolean;
   referenceSpace: string;
+  cardControls: ArCardControls;
   camera: { x: number; y: number; z: number } | null;
   plane: { x: number; y: number; z: number } | null;
+  card: { x: number; y: number; z: number } | null;
+  activeCardId: number | null;
   message: string;
   text: string;
 };
@@ -100,12 +108,20 @@ type Renderer = {
 
 export type ArEngine = {
   setActiveCard: (card: ArCard) => void;
+  setConfig: (config: Partial<ArCardControls>) => void;
   throwCard: (card: ArCard, gesture: ArThrowGesture) => void;
   stop: () => void;
 };
 
 const PLANE_SIZE_METERS = 1.25;
 const PLANE_DISTANCE_METERS = 1.7;
+const CARD_WIDTH_METERS = 0.42;
+const CARD_HEIGHT_METERS = 0.58;
+const CARD_VERTICAL_OFFSET_METERS = -0.04;
+const DEFAULT_CARD_CONTROLS: ArCardControls = {
+  cardDistance: 0.82,
+  cardTiltDeg: 8,
+};
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
@@ -133,6 +149,32 @@ function cameraPositionFromMatrix(matrix: Float32Array): Vec3 {
 
 function forwardFromMatrix(matrix: Float32Array): Vec3 {
   return { x: -matrix[8], y: -matrix[9], z: -matrix[10] };
+}
+
+function rightFromMatrix(matrix: Float32Array): Vec3 {
+  return { x: matrix[0], y: matrix[1], z: matrix[2] };
+}
+
+function upFromMatrix(matrix: Float32Array): Vec3 {
+  return { x: matrix[4], y: matrix[5], z: matrix[6] };
+}
+
+function addVec3(a: Vec3, b: Vec3): Vec3 {
+  return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };
+}
+
+function scaleVec3(vector: Vec3, scale: number): Vec3 {
+  return { x: vector.x * scale, y: vector.y * scale, z: vector.z * scale };
+}
+
+function normalizeVec3(vector: Vec3): Vec3 {
+  const length = Math.hypot(vector.x, vector.y, vector.z);
+
+  if (length < 0.001) {
+    return { x: 0, y: 1, z: 0 };
+  }
+
+  return { x: vector.x / length, y: vector.y / length, z: vector.z / length };
 }
 
 function normalizeHorizontal(vector: Vec3) {
@@ -164,6 +206,80 @@ function floorPlaneMatrix(center: Vec3, yawForward: Vec3, size: number) {
   matrix[15] = 1;
 
   return matrix;
+}
+
+function orientedPlaneMatrix(center: Vec3, xAxis: Vec3, zAxis: Vec3, width: number, height: number) {
+  const matrix = new Float32Array(16);
+
+  matrix[0] = xAxis.x * width;
+  matrix[1] = xAxis.y * width;
+  matrix[2] = xAxis.z * width;
+  matrix[4] = 0;
+  matrix[5] = 0;
+  matrix[6] = 0;
+  matrix[8] = zAxis.x * height;
+  matrix[9] = zAxis.y * height;
+  matrix[10] = zAxis.z * height;
+  matrix[12] = center.x;
+  matrix[13] = center.y;
+  matrix[14] = center.z;
+  matrix[15] = 1;
+
+  return matrix;
+}
+
+function phoneCardPoseFromMatrix(matrix: Float32Array, controls: ArCardControls) {
+  const camera = cameraPositionFromMatrix(matrix);
+  const right = normalizeVec3(rightFromMatrix(matrix));
+  const up = normalizeVec3(upFromMatrix(matrix));
+  const forward = normalizeVec3(forwardFromMatrix(matrix));
+  const tiltRad = (controls.cardTiltDeg * Math.PI) / 180;
+  const vertical = normalizeVec3(addVec3(scaleVec3(up, Math.cos(tiltRad)), scaleVec3(forward, Math.sin(tiltRad))));
+  const center = addVec3(
+    addVec3(camera, scaleVec3(forward, controls.cardDistance)),
+    scaleVec3(up, CARD_VERTICAL_OFFSET_METERS),
+  );
+
+  return {
+    center,
+    right,
+    forward,
+    vertical,
+  };
+}
+
+function hslToRgb(hue: number, saturation: number, lightness: number): [number, number, number] {
+  const h = ((hue % 360) + 360) % 360;
+  const s = clamp(saturation, 0, 100) / 100;
+  const l = clamp(lightness, 0, 100) / 100;
+  const chroma = (1 - Math.abs(2 * l - 1)) * s;
+  const x = chroma * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - chroma / 2;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+
+  if (h < 60) {
+    r = chroma;
+    g = x;
+  } else if (h < 120) {
+    r = x;
+    g = chroma;
+  } else if (h < 180) {
+    g = chroma;
+    b = x;
+  } else if (h < 240) {
+    g = x;
+    b = chroma;
+  } else if (h < 300) {
+    r = x;
+    b = chroma;
+  } else {
+    r = chroma;
+    b = x;
+  }
+
+  return [r + m, g + m, b + m];
 }
 
 function formatVec(vector: Vec3 | null) {
@@ -274,8 +390,11 @@ function createDebug({
   viewCount,
   drawnObjects,
   planeLocked,
+  cardControls,
   camera,
   plane,
+  card,
+  activeCardId,
   message,
 }: Omit<ArDebugState, "referenceSpace" | "text">): ArDebugState {
   const referenceSpace = "local-floor";
@@ -288,8 +407,12 @@ function createDebug({
     `planeLocked=${planeLocked}`,
     `referenceSpace=${referenceSpace}`,
     `build=${AR_PROOF_BUILD}`,
+    `activeCardId=${activeCardId ?? "null"}`,
+    `cardDistance=${cardControls.cardDistance.toFixed(2)}m`,
+    `cardTilt=${cardControls.cardTiltDeg.toFixed(0)}deg`,
     `camera=${formatVec(camera)}`,
     `plane=${formatVec(plane)}`,
+    `phoneCard=${formatVec(card)}`,
     `userAgent=${navigator.userAgent}`,
   ].join("\n");
 
@@ -300,8 +423,11 @@ function createDebug({
     drawnObjects,
     planeLocked,
     referenceSpace,
+    cardControls,
     camera,
     plane,
+    card,
+    activeCardId,
     message,
     text,
   };
@@ -334,10 +460,13 @@ export function getArUnavailableMessage(error?: unknown) {
 }
 
 export async function createArEngine({
+  initialCard,
+  initialConfig,
   onEnd,
   onDebug,
 }: {
   initialCard: ArCard;
+  initialConfig?: Partial<ArCardControls>;
   onEnd: () => void;
   onDebug?: (state: ArDebugState) => void;
 }): Promise<ArEngine> {
@@ -405,6 +534,19 @@ export async function createArEngine({
     let planeCenter: Vec3 | null = null;
     let planeForward: Vec3 = { x: 0, y: 0, z: -1 };
     let lastCamera: Vec3 | null = null;
+    let lastCardPosition: Vec3 | null = null;
+    let activeCard = initialCard;
+    let cardControls: ArCardControls = {
+      ...DEFAULT_CARD_CONTROLS,
+      ...initialConfig,
+    };
+
+    const setConfig = (config: Partial<ArCardControls>) => {
+      cardControls = {
+        cardDistance: clamp(config.cardDistance ?? cardControls.cardDistance, 0.3, 1.8),
+        cardTiltDeg: clamp(config.cardTiltDeg ?? cardControls.cardTiltDeg, -55, 55),
+      };
+    };
 
     const drawPlane = (modelMatrix: Float32Array, viewProjection: Float32Array, color: readonly [number, number, number], alpha: number) => {
       const mvp = multiplyMatrix4(viewProjection, modelMatrix);
@@ -431,8 +573,11 @@ export async function createArEngine({
           viewCount,
           drawnObjects,
           planeLocked: Boolean(planeCenter),
+          cardControls,
           camera: lastCamera,
           plane: planeCenter,
+          card: lastCardPosition,
+          activeCardId: activeCard?.id ?? null,
           message,
         }),
       );
@@ -477,9 +622,13 @@ export async function createArEngine({
             z: lastCamera.z + planeForward.z * PLANE_DISTANCE_METERS,
           };
         }
+      } else {
+        lastCardPosition = null;
       }
 
       let drawnObjects = 0;
+      const cardPose = poseMatrix ? phoneCardPoseFromMatrix(poseMatrix, cardControls) : null;
+      lastCardPosition = cardPose?.center ?? null;
 
       for (const view of pose.views) {
         const viewport = layer.getViewport(view);
@@ -495,9 +644,32 @@ export async function createArEngine({
         const model = floorPlaneMatrix(planeCenter, planeForward, PLANE_SIZE_METERS);
         drawPlane(model, viewProjection, [1, 1, 1], 0.78);
         drawnObjects += 1;
+
+        if (cardPose && activeCard) {
+          const borderCenter = addVec3(cardPose.center, scaleVec3(cardPose.forward, 0.006));
+          const faceCenter = addVec3(cardPose.center, scaleVec3(cardPose.forward, -0.002));
+          const borderModel = orientedPlaneMatrix(
+            borderCenter,
+            cardPose.right,
+            cardPose.vertical,
+            CARD_WIDTH_METERS * 1.055,
+            CARD_HEIGHT_METERS * 1.055,
+          );
+          const faceModel = orientedPlaneMatrix(faceCenter, cardPose.right, cardPose.vertical, CARD_WIDTH_METERS, CARD_HEIGHT_METERS);
+          const color = hslToRgb(activeCard.color.hue, activeCard.color.saturation, activeCard.color.lightness);
+
+          drawPlane(borderModel, viewProjection, [0.03, 0.03, 0.035], 0.9);
+          drawPlane(faceModel, viewProjection, color, 0.96);
+          drawnObjects += 2;
+        }
       }
 
-      emitDebug(time, pose.views.length, drawnObjects, planeCenter ? "Drawing local-floor white plane" : "Waiting to lock floor plane");
+      emitDebug(
+        time,
+        pose.views.length,
+        drawnObjects,
+        planeCenter ? "Drawing floor plane and phone-attached card" : "Waiting to lock floor plane",
+      );
     };
 
     const cleanup = () => {
@@ -527,14 +699,20 @@ export async function createArEngine({
         viewCount: 0,
         drawnObjects: 0,
         planeLocked: false,
+        cardControls,
         camera: null,
         plane: null,
+        card: null,
+        activeCardId: activeCard?.id ?? null,
         message: "XR session started; waiting for local-floor pose",
       }),
     );
 
     return {
-      setActiveCard: () => undefined,
+      setActiveCard: (card: ArCard) => {
+        activeCard = card;
+      },
+      setConfig,
       throwCard: () => undefined,
       stop: () => {
         if (ended) {

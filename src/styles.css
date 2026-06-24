@@ -210,6 +210,31 @@ button {
   text-shadow: 0 2px 12px rgba(0, 0, 0, 0.46);
 }
 
+.arControls {
+  display: grid;
+  gap: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.38);
+  backdrop-filter: blur(18px) saturate(140%);
+}
+
+.arControl {
+  display: grid;
+  gap: 5px;
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 0.72rem;
+  font-weight: 820;
+  letter-spacing: 0;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.46);
+}
+
+.arControl input {
+  width: 100%;
+  accent-color: rgba(255, 255, 255, 0.9);
+}
+
 .arDebugText {
   width: 100%;
   min-height: 118px;

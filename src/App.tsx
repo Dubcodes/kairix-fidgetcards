@@ -132,6 +132,8 @@ const EYE_LONG_PRESS_MS = 620;
 const MIN_FLIGHT_DURATION = 0.22;
 const MAX_FLIGHT_DURATION = 3.25;
 const AR_CARD_ANGLE = 54;
+const AR_DEFAULT_CARD_DISTANCE = 0.82;
+const AR_DEFAULT_CARD_TILT = 8;
 const EMOJI_POOL = [
   "✨",
   "🌈",
@@ -839,6 +841,8 @@ export default function App() {
   const [lookModeMessage, setLookModeMessage] = useState("");
   const [arStatus, setArStatus] = useState<ArStatus>("idle");
   const [arDebug, setArDebug] = useState<ArDebugState | null>(null);
+  const [arCardDistance, setArCardDistance] = useState(AR_DEFAULT_CARD_DISTANCE);
+  const [arCardTilt, setArCardTilt] = useState(AR_DEFAULT_CARD_TILT);
   const flightId = useRef(0);
   const particleId = useRef(0);
   const thrownRef = useRef(0);
@@ -861,6 +865,13 @@ export default function App() {
     topCardRef.current = topCard;
     arEngineRef.current?.setActiveCard(topCard);
   }, [topCard]);
+
+  useEffect(() => {
+    arEngineRef.current?.setConfig({
+      cardDistance: arCardDistance,
+      cardTiltDeg: arCardTilt,
+    });
+  }, [arCardDistance, arCardTilt]);
 
   const theme = useMemo(
     () => ({
@@ -1082,6 +1093,10 @@ export default function App() {
     try {
       const engine = await createArEngine({
         initialCard: topCardRef.current ?? topCard,
+        initialConfig: {
+          cardDistance: arCardDistance,
+          cardTiltDeg: arCardTilt,
+        },
         onDebug: setArDebug,
         onEnd: () => {
           arEngineRef.current = null;
@@ -1103,7 +1118,7 @@ export default function App() {
       arEngineRef.current = null;
       window.setTimeout(() => setLookModeMessage(""), 3200);
     }
-  }, [topCard]);
+  }, [arCardDistance, arCardTilt, topCard]);
 
   useEffect(() => {
     return () => {
@@ -1294,7 +1309,31 @@ export default function App() {
           ) : null}
           {isArReady ? (
             <div className="arProofPanel">
-              <div className="arProofTitle">White floor plane test</div>
+              <div className="arProofTitle">Floor plane + phone card test</div>
+              <div className="arControls" aria-label="AR card controls">
+                <label className="arControl">
+                  <span>Distance {arCardDistance.toFixed(2)}m</span>
+                  <input
+                    type="range"
+                    min="0.30"
+                    max="1.80"
+                    step="0.05"
+                    value={arCardDistance}
+                    onChange={(event) => setArCardDistance(Number(event.currentTarget.value))}
+                  />
+                </label>
+                <label className="arControl">
+                  <span>Tilt {arCardTilt.toFixed(0)}deg</span>
+                  <input
+                    type="range"
+                    min="-55"
+                    max="55"
+                    step="1"
+                    value={arCardTilt}
+                    onChange={(event) => setArCardTilt(Number(event.currentTarget.value))}
+                  />
+                </label>
+              </div>
               {arDebug ? (
                 <>
                   <textarea className="arDebugText" value={arDebug.text} readOnly aria-label="AR diagnostics" />
