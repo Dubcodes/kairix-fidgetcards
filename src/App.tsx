@@ -1150,6 +1150,14 @@ export default function App() {
     setShowControls((value) => !value);
   }
 
+  async function copyArDiagnostics() {
+    if (!arDebug?.text) {
+      return;
+    }
+
+    await navigator.clipboard?.writeText(arDebug.text).catch(() => undefined);
+  }
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.repeat) {
@@ -1164,7 +1172,7 @@ export default function App() {
         return;
       }
 
-      if (lookMode && arStatus !== "ready") {
+      if (lookMode) {
         return;
       }
 
@@ -1284,33 +1292,15 @@ export default function App() {
             </div>
           ) : null}
           {isArReady ? (
-            <div className="lookCardStage">
-              <motion.div
-                key={`look-input-${topCard.id}`}
-                className="card lookCard"
-                drag
-                dragMomentum={false}
-                dragElastic={0.12}
-                onPointerDown={captureGrabPoint}
-                onDrag={(_, info) => rotateDuringDrag(info)}
-                onDragEnd={(_, info) => throwCard(info)}
-                animate={controls}
-                transition={{ type: "spring", stiffness: 360, damping: 32, mass: 0.75 }}
-                style={{
-                  x,
-                  y,
-                  rotate,
-                  transformOrigin: grabOrigin,
-                  scale: 1,
-                }}
-                whileTap={{ scale: 0.985, cursor: "grabbing" }}
-                aria-label="Throw AR card"
-              />
+            <div className="arProofPanel">
+              <div className="arProofTitle">White floor plane test</div>
               {arDebug ? (
-                <div className="arDebug" aria-live="polite">
-                  {arDebug.message} | frames {arDebug.frameCount} | poses {arDebug.poseFrameCount} | views {arDebug.viewCount} | drawn{" "}
-                  {arDebug.drawnCards}
-                </div>
+                <>
+                  <textarea className="arDebugText" value={arDebug.text} readOnly aria-label="AR diagnostics" />
+                  <button className="arCopyButton" type="button" onClick={() => void copyArDiagnostics()}>
+                    Copy diagnostics
+                  </button>
+                </>
               ) : null}
             </div>
           ) : null}

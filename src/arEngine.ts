@@ -22,9 +22,13 @@ export type ArDebugState = {
   frameCount: number;
   poseFrameCount: number;
   viewCount: number;
-  drawnCards: number;
+  drawnObjects: number;
+  planeLocked: boolean;
+  referenceSpace: string;
+  camera: { x: number; y: number; z: number } | null;
+  plane: { x: number; y: number; z: number } | null;
   message: string;
-  error?: string;
+  text: string;
 };
 
 type XrSystemLike = {
@@ -38,7 +42,7 @@ type XrSessionLike = {
   removeEventListener?: (type: "end", listener: () => void) => void;
   requestAnimationFrame?: (callback: (time: number, frame: unknown) => void) => number;
   cancelAnimationFrame?: (handle: number) => void;
-  requestReferenceSpace?: (type: "local-floor" | "local" | "viewer") => Promise<unknown>;
+  requestReferenceSpace?: (type: "local-floor") => Promise<unknown>;
   renderState?: { baseLayer?: XrWebGlLayerLike };
   updateRenderState?: (state: unknown) => void;
 };
@@ -84,25 +88,6 @@ type Vec3 = {
   z: number;
 };
 
-type CameraBasis = {
-  position: Vec3;
-  right: Vec3;
-  up: Vec3;
-  forward: Vec3;
-};
-
-type ThrownArCard = {
-  card: ArCard;
-  position: Vec3;
-  velocity: Vec3;
-  right: Vec3;
-  up: Vec3;
-  forward: Vec3;
-  spin: number;
-  spinVelocity: number;
-  age: number;
-};
-
 type Renderer = {
   program: WebGLProgram;
   positionLocation: number;
@@ -117,55 +102,11 @@ export type ArEngine = {
   stop: () => void;
 };
 
-const MAX_THROWN_CARDS = 8;
-const CARD_WIDTH = 0.42;
-const CARD_HEIGHT = 0.58;
-const CARD_FACE_INSET = 0.92;
+const PLANE_SIZE_METERS = 1.25;
+const PLANE_DISTANCE_METERS = 1.7;
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
-}
-
-function vecAdd(a: Vec3, b: Vec3): Vec3 {
-  return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };
-}
-
-function vecScale(vector: Vec3, scale: number): Vec3 {
-  return { x: vector.x * scale, y: vector.y * scale, z: vector.z * scale };
-}
-
-function hslToRgb(color: ArCardColor) {
-  const saturation = color.saturation / 100;
-  const lightness = color.lightness / 100;
-  const chroma = (1 - Math.abs(2 * lightness - 1)) * saturation;
-  const huePrime = color.hue / 60;
-  const secondary = chroma * (1 - Math.abs((huePrime % 2) - 1));
-  const match = lightness - chroma / 2;
-  let red = 0;
-  let green = 0;
-  let blue = 0;
-
-  if (huePrime < 1) {
-    red = chroma;
-    green = secondary;
-  } else if (huePrime < 2) {
-    red = secondary;
-    green = chroma;
-  } else if (huePrime < 3) {
-    green = chroma;
-    blue = secondary;
-  } else if (huePrime < 4) {
-    green = secondary;
-    blue = chroma;
-  } else if (huePrime < 5) {
-    red = secondary;
-    blue = chroma;
-  } else {
-    red = chroma;
-    blue = secondary;
-  }
-
-  return [red + match, green + match, blue + match] as const;
 }
 
 function multiplyMatrix4(a: Float32Array, b: Float32Array) {
@@ -184,41 +125,51 @@ function multiplyMatrix4(a: Float32Array, b: Float32Array) {
   return out;
 }
 
-function cameraBasisFromMatrix(matrix: Float32Array): CameraBasis {
-  return {
-    position: { x: matrix[12], y: matrix[13], z: matrix[14] },
-    right: { x: matrix[0], y: matrix[1], z: matrix[2] },
-    up: { x: matrix[4], y: matrix[5], z: matrix[6] },
-    forward: { x: -matrix[8], y: -matrix[9], z: -matrix[10] },
-  };
+function cameraPositionFromMatrix(matrix: Float32Array): Vec3 {
+  return { x: matrix[12], y: matrix[13], z: matrix[14] };
 }
 
-function cardModelMatrix(position: Vec3, right: Vec3, up: Vec3, forward: Vec3, width: number, height: number, spin: number) {
-  const cos = Math.cos(spin);
-  const sin = Math.sin(spin);
-  const xAxis = vecAdd(vecScale(right, cos), vecScale(up, sin));
-  const yAxis = vecAdd(vecScale(right, -sin), vecScale(up, cos));
+function forwardFromMatrix(matrix: Float32Array): Vec3 {
+  return { x: -matrix[8], y: -matrix[9], z: -matrix[10] };
+}
+
+function normalizeHorizontal(vector: Vec3) {
+  const length = Math.hypot(vector.x, vector.z);
+
+  if (length < 0.001) {
+    return { x: 0, y: 0, z: -1 };
+  }
+
+  return { x: vector.x / length, y: 0, z: vector.z / length };
+}
+
+function floorPlaneMatrix(center: Vec3, yawForward: Vec3, size: number) {
+  const right = { x: yawForward.z, y: 0, z: -yawForward.x };
   const matrix = new Float32Array(16);
 
-  matrix[0] = xAxis.x * width;
-  matrix[1] = xAxis.y * width;
-  matrix[2] = xAxis.z * width;
-  matrix[4] = yAxis.x * height;
-  matrix[5] = yAxis.y * height;
-  matrix[6] = yAxis.z * height;
-  matrix[8] = forward.x * 0.02;
-  matrix[9] = forward.y * 0.02;
-  matrix[10] = forward.z * 0.02;
-  matrix[12] = position.x;
-  matrix[13] = position.y;
-  matrix[14] = position.z;
+  matrix[0] = right.x * size;
+  matrix[1] = 0;
+  matrix[2] = right.z * size;
+  matrix[4] = 0;
+  matrix[5] = 0;
+  matrix[6] = 1;
+  matrix[8] = yawForward.x * size;
+  matrix[9] = 0;
+  matrix[10] = yawForward.z * size;
+  matrix[12] = center.x;
+  matrix[13] = center.y + 0.01;
+  matrix[14] = center.z;
   matrix[15] = 1;
 
   return matrix;
 }
 
-function offsetTowardCamera(position: Vec3, forward: Vec3, amount: number) {
-  return vecAdd(position, vecScale(forward, -amount));
+function formatVec(vector: Vec3 | null) {
+  if (!vector) {
+    return "null";
+  }
+
+  return `${vector.x.toFixed(3)}, ${vector.y.toFixed(3)}, ${vector.z.toFixed(3)}`;
 }
 
 function compileShader(gl: WebGLRenderingContext, type: number, source: string) {
@@ -288,7 +239,7 @@ function createRenderer(gl: WebGLRenderingContext): Renderer {
   gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
   gl.bufferData(
     gl.ARRAY_BUFFER,
-    new Float32Array([-0.5, -0.7, 0, 0.5, -0.7, 0, -0.5, 0.7, 0, 0.5, 0.7, 0]),
+    new Float32Array([-0.5, 0, -0.5, 0.5, 0, -0.5, -0.5, 0, 0.5, 0.5, 0, 0.5]),
     gl.STATIC_DRAW,
   );
 
@@ -315,8 +266,42 @@ function createCanvas() {
   return { canvas, resizeCanvas };
 }
 
-function createDebug(frameCount: number, poseFrameCount: number, viewCount: number, drawnCards: number, message: string): ArDebugState {
-  return { frameCount, poseFrameCount, viewCount, drawnCards, message };
+function createDebug({
+  frameCount,
+  poseFrameCount,
+  viewCount,
+  drawnObjects,
+  planeLocked,
+  camera,
+  plane,
+  message,
+}: Omit<ArDebugState, "referenceSpace" | "text">): ArDebugState {
+  const referenceSpace = "local-floor";
+  const text = [
+    `message=${message}`,
+    `frames=${frameCount}`,
+    `poseFrames=${poseFrameCount}`,
+    `views=${viewCount}`,
+    `drawnObjects=${drawnObjects}`,
+    `planeLocked=${planeLocked}`,
+    `referenceSpace=${referenceSpace}`,
+    `camera=${formatVec(camera)}`,
+    `plane=${formatVec(plane)}`,
+    `userAgent=${navigator.userAgent}`,
+  ].join("\n");
+
+  return {
+    frameCount,
+    poseFrameCount,
+    viewCount,
+    drawnObjects,
+    planeLocked,
+    referenceSpace,
+    camera,
+    plane,
+    message,
+    text,
+  };
 }
 
 export function getArUnavailableMessage(error?: unknown) {
@@ -346,7 +331,6 @@ export function getArUnavailableMessage(error?: unknown) {
 }
 
 export async function createArEngine({
-  initialCard,
   onEnd,
   onDebug,
 }: {
@@ -365,7 +349,8 @@ export async function createArEngine({
   }
 
   const session = await xr.requestSession("immersive-ar", {
-    optionalFeatures: ["dom-overlay", "local-floor"],
+    requiredFeatures: ["local-floor"],
+    optionalFeatures: ["dom-overlay"],
     domOverlay: { root: document.body },
   });
 
@@ -401,30 +386,24 @@ export async function createArEngine({
 
     const baseLayer = new XRWebGLLayerCtor(session, gl, { alpha: true, antialias: false, depth: true });
     session.updateRenderState({ baseLayer });
-    const referenceSpace = await session.requestReferenceSpace?.("local-floor").catch(() => session.requestReferenceSpace?.("local"));
+    const referenceSpace = await session.requestReferenceSpace?.("local-floor");
 
     if (!referenceSpace) {
-      throw new Error("XR reference space unavailable");
+      throw new Error("local-floor reference space unavailable");
     }
 
     const renderer = createRenderer(gl);
-    const thrownCards: ThrownArCard[] = [];
-    let activeCard: ArCard = initialCard;
     let frameHandle: number | null = null;
     let running = true;
+    let ended = false;
     let frameCount = 0;
     let poseFrameCount = 0;
     let lastDebugAt = 0;
-    let lastFrameTime = 0;
-    let ended = false;
-    let lastCamera: CameraBasis = {
-      position: { x: 0, y: 1.45, z: 0 },
-      right: { x: 1, y: 0, z: 0 },
-      up: { x: 0, y: 1, z: 0 },
-      forward: { x: 0, y: 0, z: -1 },
-    };
+    let planeCenter: Vec3 | null = null;
+    let planeForward: Vec3 = { x: 0, y: 0, z: -1 };
+    let lastCamera: Vec3 | null = null;
 
-    const drawPlane = (modelMatrix: Float32Array, viewProjection: Float32Array, color: readonly [number, number, number], alpha = 0.96) => {
+    const drawPlane = (modelMatrix: Float32Array, viewProjection: Float32Array, color: readonly [number, number, number], alpha: number) => {
       const mvp = multiplyMatrix4(viewProjection, modelMatrix);
 
       gl.useProgram(renderer.program);
@@ -436,49 +415,24 @@ export async function createArEngine({
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     };
 
-    const drawCard = (
-      card: ArCard,
-      position: Vec3,
-      right: Vec3,
-      up: Vec3,
-      forward: Vec3,
-      width: number,
-      height: number,
-      spin: number,
-      viewProjection: Float32Array,
-      alpha = 0.96,
-    ) => {
-      const facePosition = offsetTowardCamera(position, forward, 0.006);
-      const [red, green, blue] = hslToRgb(card.color);
-      drawPlane(cardModelMatrix(position, right, up, forward, width * 1.08, height * 1.08, spin), viewProjection, [0.02, 0.02, 0.025], alpha * 0.74);
-      drawPlane(
-        cardModelMatrix(facePosition, right, up, forward, width * CARD_FACE_INSET, height * CARD_FACE_INSET, spin),
-        viewProjection,
-        [red, green, blue],
-        alpha,
+    const emitDebug = (time: number, viewCount: number, drawnObjects: number, message: string) => {
+      if (time - lastDebugAt < 500) {
+        return;
+      }
+
+      lastDebugAt = time;
+      onDebug?.(
+        createDebug({
+          frameCount,
+          poseFrameCount,
+          viewCount,
+          drawnObjects,
+          planeLocked: Boolean(planeCenter),
+          camera: lastCamera,
+          plane: planeCenter,
+          message,
+        }),
       );
-    };
-
-    const updateThrownCards = (deltaSeconds: number) => {
-      for (const card of thrownCards) {
-        card.age += deltaSeconds;
-        card.velocity.y -= 0.45 * deltaSeconds;
-        card.position = vecAdd(card.position, vecScale(card.velocity, deltaSeconds));
-        card.spin += card.spinVelocity * deltaSeconds;
-      }
-
-      for (let index = thrownCards.length - 1; index >= 0; index -= 1) {
-        const card = thrownCards[index];
-        const distance = Math.hypot(
-          card.position.x - lastCamera.position.x,
-          card.position.y - lastCamera.position.y,
-          card.position.z - lastCamera.position.z,
-        );
-
-        if (card.age > 9 || distance > 14) {
-          thrownCards.splice(index, 1);
-        }
-      }
     };
 
     const drawFrame = (time: number, frame: unknown) => {
@@ -502,7 +456,7 @@ export async function createArEngine({
       if (!pose?.views.length || !layer.getViewport) {
         gl.viewport(0, 0, canvas.width, canvas.height);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-        onDebug?.(createDebug(frameCount, poseFrameCount, 0, 0, "No XR pose yet"));
+        emitDebug(time, 0, 0, "No XR pose yet");
         return;
       }
 
@@ -510,63 +464,37 @@ export async function createArEngine({
       const poseMatrix = pose.transform?.matrix ?? pose.views[0]?.transform?.matrix;
 
       if (poseMatrix) {
-        lastCamera = cameraBasisFromMatrix(poseMatrix);
+        lastCamera = cameraPositionFromMatrix(poseMatrix);
+
+        if (!planeCenter) {
+          planeForward = normalizeHorizontal(forwardFromMatrix(poseMatrix));
+          planeCenter = {
+            x: lastCamera.x + planeForward.x * PLANE_DISTANCE_METERS,
+            y: 0,
+            z: lastCamera.z + planeForward.z * PLANE_DISTANCE_METERS,
+          };
+        }
       }
 
-      const deltaSeconds = lastFrameTime > 0 ? clamp((time - lastFrameTime) / 1000, 0.001, 0.05) : 0.016;
-      lastFrameTime = time;
-      updateThrownCards(deltaSeconds);
-
-      let drawnCards = 0;
+      let drawnObjects = 0;
 
       for (const view of pose.views) {
         const viewport = layer.getViewport(view);
         const viewMatrix = view.transform?.inverse?.matrix;
 
-        if (!viewport || !viewMatrix) {
+        if (!viewport || !viewMatrix || !planeCenter) {
           continue;
         }
 
         gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         const viewProjection = multiplyMatrix4(view.projectionMatrix, viewMatrix);
-
-        for (const thrownCard of thrownCards) {
-          drawCard(
-            thrownCard.card,
-            thrownCard.position,
-            thrownCard.right,
-            thrownCard.up,
-            thrownCard.forward,
-            CARD_WIDTH,
-            CARD_HEIGHT,
-            thrownCard.spin,
-            viewProjection,
-            clamp(1 - thrownCard.age / 10, 0.28, 0.96),
-          );
-          drawnCards += 1;
-        }
-
-        const activePosition = vecAdd(vecAdd(lastCamera.position, vecScale(lastCamera.forward, 0.82)), vecScale(lastCamera.up, -0.08));
-        drawCard(
-          activeCard,
-          activePosition,
-          lastCamera.right,
-          lastCamera.up,
-          lastCamera.forward,
-          CARD_WIDTH * 0.92,
-          CARD_HEIGHT * 0.92,
-          0,
-          viewProjection,
-          0.98,
-        );
-        drawnCards += 1;
+        const model = floorPlaneMatrix(planeCenter, planeForward, PLANE_SIZE_METERS);
+        drawPlane(model, viewProjection, [1, 1, 1], 0.78);
+        drawnObjects += 1;
       }
 
-      if (time - lastDebugAt > 500) {
-        lastDebugAt = time;
-        onDebug?.(createDebug(frameCount, poseFrameCount, pose.views.length, drawnCards, "XR drawing cards"));
-      }
+      emitDebug(time, pose.views.length, drawnObjects, planeCenter ? "Drawing local-floor white plane" : "Waiting to lock floor plane");
     };
 
     const cleanup = () => {
@@ -589,46 +517,22 @@ export async function createArEngine({
     document.body.appendChild(canvas);
     session.addEventListener("end", handleEnd);
     frameHandle = session.requestAnimationFrame(drawFrame);
-    onDebug?.(createDebug(0, 0, 0, 0, "XR session started"));
+    onDebug?.(
+      createDebug({
+        frameCount: 0,
+        poseFrameCount: 0,
+        viewCount: 0,
+        drawnObjects: 0,
+        planeLocked: false,
+        camera: null,
+        plane: null,
+        message: "XR session started; waiting for local-floor pose",
+      }),
+    );
 
     return {
-      setActiveCard: (card) => {
-        activeCard = card;
-      },
-      throwCard: (card, gesture) => {
-        const offsetRight = clamp(gesture.startX / 620, -0.42, 0.42);
-        const offsetUp = clamp(-gesture.startY / 620, -0.52, 0.52);
-        const speed = clamp(gesture.throwSpeed / 850, 0.45, 5.8);
-        const lateral = speed * 0.26;
-        const lift = speed * 0.1;
-        const releaseRight = clamp(gesture.unitX * 0.22, -0.28, 0.28);
-        const releaseUp = clamp(-gesture.unitY * 0.12, -0.2, 0.2);
-
-        thrownCards.push({
-          card,
-          position: vecAdd(
-            vecAdd(
-              vecAdd(lastCamera.position, vecScale(lastCamera.forward, 0.88)),
-              vecScale(lastCamera.right, offsetRight + releaseRight),
-            ),
-            vecScale(lastCamera.up, offsetUp + releaseUp - 0.08),
-          ),
-          velocity: vecAdd(
-            vecAdd(vecScale(lastCamera.forward, speed), vecScale(lastCamera.right, gesture.unitX * lateral)),
-            vecScale(lastCamera.up, -gesture.unitY * lift),
-          ),
-          right: lastCamera.right,
-          up: lastCamera.up,
-          forward: lastCamera.forward,
-          spin: 0,
-          spinVelocity: clamp(gesture.spin / 30, -4.4, 4.4),
-          age: 0,
-        });
-
-        if (thrownCards.length > MAX_THROWN_CARDS) {
-          thrownCards.splice(0, thrownCards.length - MAX_THROWN_CARDS);
-        }
-      },
+      setActiveCard: () => undefined,
+      throwCard: () => undefined,
       stop: () => {
         if (ended) {
           return;
@@ -643,7 +547,6 @@ export async function createArEngine({
           frameHandle = null;
         }
 
-        canvas.remove();
         void session.end().catch(() => undefined);
       },
     };

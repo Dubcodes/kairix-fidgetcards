@@ -177,18 +177,48 @@ button {
   display: none;
 }
 
-.arDebug {
+.arProofPanel {
   position: fixed;
   left: max(14px, env(safe-area-inset-left));
   right: max(14px, env(safe-area-inset-right));
-  bottom: max(58px, calc(env(safe-area-inset-bottom) + 52px));
+  bottom: max(48px, calc(env(safe-area-inset-bottom) + 44px));
   z-index: 64;
+  display: grid;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.arProofTitle {
   color: rgba(255, 255, 255, 0.82);
-  font-size: 0.68rem;
-  font-weight: 760;
+  font-size: 0.78rem;
+  font-weight: 820;
   text-align: center;
   text-shadow: 0 2px 12px rgba(0, 0, 0, 0.46);
-  pointer-events: none;
+}
+
+.arDebugText {
+  width: 100%;
+  min-height: 118px;
+  max-height: 24vh;
+  resize: vertical;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.42);
+  color: rgba(255, 255, 255, 0.9);
+  font: 700 0.68rem/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.arCopyButton {
+  justify-self: center;
+  min-height: 34px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 8px;
+  padding: 0 12px;
+  background: rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 0.76rem;
+  font-weight: 820;
 }
 
 .counter,
