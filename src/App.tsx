@@ -952,28 +952,7 @@ export default function App() {
         rotate.set(0);
         setFlyingCards((value) => {
           if (isLookThrow) {
-            const nextCard: FlyingCard = {
-              ...topCard,
-              flightMode: "look",
-              flightId: nextFlightId,
-              transformOrigin: currentGrabOrigin,
-              startX,
-              startY,
-              startZ: 0,
-              startRotate,
-              startRotateX,
-              startRotateY,
-              targetRotateX,
-              targetRotateY,
-              targetScale,
-              targetX,
-              targetY,
-              targetZ,
-              targetRotate: spin,
-              duration,
-            };
-
-            return [...value.filter((card) => card.flightMode !== "look"), nextCard];
+            return value.filter((card) => card.flightMode !== "look");
           }
 
           const nextCard: FlyingCard = {
@@ -1377,49 +1356,6 @@ export default function App() {
                 );
               })}
 
-              {flyingCards
-                .filter((card) => card.flightMode === "look")
-                .map((card) => (
-                  <motion.div
-                    key={card.flightId}
-                    className="arCard arFlyingCard"
-                    initial={{
-                      x: card.startX,
-                      y: card.startY,
-                      z: card.startZ,
-                      rotate: card.startRotate,
-                      rotateX: card.startRotateX,
-                      rotateY: card.startRotateY,
-                      scale: 1,
-                      opacity: 1,
-                    }}
-                    animate={{
-                      x: card.targetX,
-                      y: card.targetY,
-                      z: card.targetZ,
-                      rotate: card.targetRotate,
-                      rotateX: card.targetRotateX,
-                      rotateY: card.targetRotateY,
-                      scale: card.targetScale,
-                      opacity: 0.92,
-                    }}
-                    transition={{
-                      duration: card.duration,
-                      ease: "linear",
-                    }}
-                    onAnimationComplete={() => {
-                      setFlyingCards((value) => value.filter((flyingCard) => flyingCard.flightId !== card.flightId));
-                    }}
-                    style={{
-                      background: cardBackground(card, card.isGradient),
-                      borderColor: colorToCss(card.color, 12, -18),
-                      boxShadow: "0 28px 80px rgba(0, 0, 0, 0.26), 0 1px 0 rgba(255, 255, 255, 0.32) inset",
-                      transformOrigin: card.transformOrigin,
-                    }}
-                  >
-                    <CardFace card={card} />
-                  </motion.div>
-                ))}
             </div>
           ) : null}
           {isArReady ? (

@@ -9,7 +9,7 @@ export type ArCard = {
   color: ArCardColor;
 };
 
-export const AR_PROOF_BUILD = "ar-phone-card-dom-2026-06-24-01";
+export const AR_PROOF_BUILD = "ar-world-card-physics-2026-06-24-01";
 
 export type ArCardControls = {
   cardDistance: number;
@@ -37,6 +37,7 @@ export type ArDebugState = {
   plane: { x: number; y: number; z: number } | null;
   card: { x: number; y: number; z: number } | null;
   activeCardId: number | null;
+  worldCardCount: number;
   message: string;
   text: string;
 };
@@ -106,6 +107,20 @@ type Renderer = {
   vertexBuffer: WebGLBuffer;
 };
 
+type WorldCard = {
+  key: number;
+  card: ArCard;
+  position: Vec3;
+  velocity: Vec3;
+  right: Vec3;
+  vertical: Vec3;
+  normal: Vec3;
+  spinVelocity: number;
+  tumbleVelocity: number;
+  age: number;
+  settled: boolean;
+};
+
 export type ArEngine = {
   setActiveCard: (card: ArCard) => void;
   setConfig: (config: Partial<ArCardControls>) => void;
@@ -118,6 +133,10 @@ const PLANE_DISTANCE_METERS = 1.7;
 const CARD_WIDTH_METERS = 0.42;
 const CARD_HEIGHT_METERS = 0.58;
 const CARD_VERTICAL_OFFSET_METERS = -0.04;
+const WORLD_CARD_LIMIT = 32;
+const WORLD_GRAVITY = 3.8;
+const WORLD_DRAG = 0.44;
+const WORLD_FLOOR_Y = 0.018;
 const DEFAULT_CARD_CONTROLS: ArCardControls = {
   cardDistance: 0.82,
   cardTiltDeg: 56,
@@ -167,6 +186,28 @@ function scaleVec3(vector: Vec3, scale: number): Vec3 {
   return { x: vector.x * scale, y: vector.y * scale, z: vector.z * scale };
 }
 
+function crossVec3(a: Vec3, b: Vec3): Vec3 {
+  return {
+    x: a.y * b.z - a.z * b.y,
+    y: a.z * b.x - a.x * b.z,
+    z: a.x * b.y - a.y * b.x,
+  };
+}
+
+function rotateVecAroundAxis(vector: Vec3, axis: Vec3, angle: number): Vec3 {
+  const unitAxis = normalizeVec3(axis);
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const dot = vector.x * unitAxis.x + vector.y * unitAxis.y + vector.z * unitAxis.z;
+  const cross = crossVec3(unitAxis, vector);
+
+  return normalizeVec3({
+    x: vector.x * cos + cross.x * sin + unitAxis.x * dot * (1 - cos),
+    y: vector.y * cos + cross.y * sin + unitAxis.y * dot * (1 - cos),
+    z: vector.z * cos + cross.z * sin + unitAxis.z * dot * (1 - cos),
+  });
+}
+
 function normalizeVec3(vector: Vec3): Vec3 {
   const length = Math.hypot(vector.x, vector.y, vector.z);
 
@@ -185,6 +226,20 @@ function normalizeHorizontal(vector: Vec3) {
   }
 
   return { x: vector.x / length, y: 0, z: vector.z / length };
+}
+
+function horizontalOrFallback(vector: Vec3, fallback: Vec3) {
+  const length = Math.hypot(vector.x, vector.z);
+
+  if (length < 0.001) {
+    return normalizeHorizontal(fallback);
+  }
+
+  return { x: vector.x / length, y: 0, z: vector.z / length };
+}
+
+function floorRightFromForward(forward: Vec3): Vec3 {
+  return { x: forward.z, y: 0, z: -forward.x };
 }
 
 function floorPlaneMatrix(center: Vec3, yawForward: Vec3, size: number) {
@@ -395,6 +450,7 @@ function createDebug({
   plane,
   card,
   activeCardId,
+  worldCardCount,
   message,
 }: Omit<ArDebugState, "referenceSpace" | "text">): ArDebugState {
   const referenceSpace = "local-floor";
@@ -408,6 +464,7 @@ function createDebug({
     `referenceSpace=${referenceSpace}`,
     `build=${AR_PROOF_BUILD}`,
     `activeCardId=${activeCardId ?? "null"}`,
+    `worldCards=${worldCardCount}`,
     `cardDistance=${cardControls.cardDistance.toFixed(2)}m`,
     `cardTilt=${cardControls.cardTiltDeg.toFixed(0)}deg`,
     `camera=${formatVec(camera)}`,
@@ -428,6 +485,7 @@ function createDebug({
     plane,
     card,
     activeCardId,
+    worldCardCount,
     message,
     text,
   };
@@ -524,17 +582,22 @@ export async function createArEngine({
       throw new Error("local-floor reference space unavailable");
     }
 
+    const renderer = createRenderer(gl);
     let frameHandle: number | null = null;
     let running = true;
     let ended = false;
     let frameCount = 0;
     let poseFrameCount = 0;
     let lastDebugAt = 0;
+    let lastFrameTime = 0;
     let planeCenter: Vec3 | null = null;
     let planeForward: Vec3 = { x: 0, y: 0, z: -1 };
     let lastCamera: Vec3 | null = null;
     let lastCardPosition: Vec3 | null = null;
+    let lastCardPose: ReturnType<typeof phoneCardPoseFromMatrix> | null = null;
     let activeCard = initialCard;
+    let nextWorldCardKey = 1;
+    let worldCards: WorldCard[] = [];
     let cardControls: ArCardControls = {
       ...DEFAULT_CARD_CONTROLS,
       ...initialConfig,
@@ -545,6 +608,117 @@ export async function createArEngine({
         cardDistance: clamp(config.cardDistance ?? cardControls.cardDistance, 0.3, 1.8),
         cardTiltDeg: clamp(config.cardTiltDeg ?? cardControls.cardTiltDeg, -75, 75),
       };
+    };
+
+    const drawPlane = (modelMatrix: Float32Array, viewProjection: Float32Array, color: readonly [number, number, number], alpha: number) => {
+      const mvp = multiplyMatrix4(viewProjection, modelMatrix);
+
+      gl.useProgram(renderer.program);
+      gl.bindBuffer(gl.ARRAY_BUFFER, renderer.vertexBuffer);
+      gl.enableVertexAttribArray(renderer.positionLocation);
+      gl.vertexAttribPointer(renderer.positionLocation, 3, gl.FLOAT, false, 0, 0);
+      gl.uniformMatrix4fv(renderer.mvpLocation, false, mvp);
+      gl.uniform4f(renderer.colorLocation, color[0], color[1], color[2], alpha);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    };
+
+    const spawnWorldCard = (card: ArCard, gesture: ArThrowGesture) => {
+      if (!lastCardPose) {
+        return;
+      }
+
+      const throwSpeed = clamp(gesture.throwSpeed / 1250, 0.35, 4.8);
+      const screenLift = clamp(-gesture.unitY, -0.35, 1);
+      const direction = normalizeVec3(
+        addVec3(
+          addVec3(scaleVec3(lastCardPose.forward, 1.28), scaleVec3(lastCardPose.right, gesture.unitX * 0.62)),
+          scaleVec3(lastCardPose.vertical, screenLift * 0.46 + 0.06),
+        ),
+      );
+      const velocity = addVec3(scaleVec3(direction, throwSpeed), scaleVec3(lastCardPose.vertical, screenLift * 0.22));
+      const normal = normalizeVec3(crossVec3(lastCardPose.right, lastCardPose.vertical));
+
+      worldCards = [
+        ...worldCards.slice(-(WORLD_CARD_LIMIT - 1)),
+        {
+          key: nextWorldCardKey,
+          card,
+          position: addVec3(lastCardPose.center, scaleVec3(lastCardPose.forward, 0.035)),
+          velocity,
+          right: lastCardPose.right,
+          vertical: lastCardPose.vertical,
+          normal,
+          spinVelocity: clamp(gesture.spin * 0.09 + gesture.unitX * 3.2, -10, 10),
+          tumbleVelocity: clamp(throwSpeed * 1.15 + Math.abs(gesture.unitY) * 1.2, 0.6, 7.2),
+          age: 0,
+          settled: false,
+        },
+      ];
+      nextWorldCardKey += 1;
+    };
+
+    const settleWorldCard = (card: WorldCard) => {
+      const forward = horizontalOrFallback(card.velocity, planeForward);
+      card.position.y = WORLD_FLOOR_Y;
+      card.velocity = { x: 0, y: 0, z: 0 };
+      card.vertical = forward;
+      card.right = floorRightFromForward(forward);
+      card.normal = { x: 0, y: 1, z: 0 };
+      card.spinVelocity = 0;
+      card.tumbleVelocity = 0;
+      card.settled = true;
+    };
+
+    const updateWorldCards = (time: number) => {
+      if (!lastFrameTime) {
+        lastFrameTime = time;
+        return;
+      }
+
+      const dt = clamp((time - lastFrameTime) / 1000, 0.001, 0.05);
+      lastFrameTime = time;
+
+      for (const card of worldCards) {
+        card.age += dt;
+
+        if (card.settled) {
+          continue;
+        }
+
+        card.velocity.y -= WORLD_GRAVITY * dt;
+        const drag = Math.max(0, 1 - WORLD_DRAG * dt);
+        card.velocity.x *= drag;
+        card.velocity.y *= Math.max(0, 1 - WORLD_DRAG * 0.35 * dt);
+        card.velocity.z *= drag;
+        card.position = addVec3(card.position, scaleVec3(card.velocity, dt));
+
+        if (Math.abs(card.spinVelocity) > 0.001) {
+          card.right = rotateVecAroundAxis(card.right, card.normal, card.spinVelocity * dt);
+          card.vertical = rotateVecAroundAxis(card.vertical, card.normal, card.spinVelocity * dt);
+        }
+
+        if (Math.abs(card.tumbleVelocity) > 0.001) {
+          card.vertical = rotateVecAroundAxis(card.vertical, card.right, card.tumbleVelocity * dt);
+          card.normal = rotateVecAroundAxis(card.normal, card.right, card.tumbleVelocity * dt);
+        }
+
+        card.spinVelocity *= Math.max(0, 1 - 0.72 * dt);
+        card.tumbleVelocity *= Math.max(0, 1 - 0.88 * dt);
+
+        if (card.position.y <= WORLD_FLOOR_Y) {
+          if (Math.hypot(card.velocity.x, card.velocity.y, card.velocity.z) < 0.72 || card.age > 1.2) {
+            settleWorldCard(card);
+          } else {
+            card.position.y = WORLD_FLOOR_Y;
+            card.velocity.y = Math.abs(card.velocity.y) * 0.18;
+            card.velocity.x *= 0.72;
+            card.velocity.z *= 0.72;
+            card.tumbleVelocity *= 0.5;
+          }
+        }
+      }
+
+      worldCards = worldCards.filter((card) => card.age < 24 || card.settled).slice(-WORLD_CARD_LIMIT);
     };
 
     const emitDebug = (time: number, viewCount: number, drawnObjects: number, message: string) => {
@@ -565,6 +739,7 @@ export async function createArEngine({
           plane: planeCenter,
           card: lastCardPosition,
           activeCardId: activeCard?.id ?? null,
+          worldCardCount: worldCards.length,
           message,
         }),
       );
@@ -616,23 +791,49 @@ export async function createArEngine({
       let drawnObjects = 0;
       const cardPose = poseMatrix ? phoneCardPoseFromMatrix(poseMatrix, cardControls) : null;
       lastCardPosition = cardPose?.center ?? null;
+      lastCardPose = cardPose;
+      updateWorldCards(time);
 
       for (const view of pose.views) {
         const viewport = layer.getViewport(view);
+        const viewMatrix = view.transform?.inverse?.matrix;
 
-        if (!viewport || !planeCenter) {
+        if (!viewport || !viewMatrix || !planeCenter) {
           continue;
         }
 
         gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        const viewProjection = multiplyMatrix4(view.projectionMatrix, viewMatrix);
+
+        for (const worldCard of worldCards) {
+          const faceColor = hslToRgb(worldCard.card.color.hue, worldCard.card.color.saturation, worldCard.card.color.lightness);
+          const borderModel = orientedPlaneMatrix(
+            worldCard.position,
+            worldCard.right,
+            worldCard.vertical,
+            CARD_WIDTH_METERS * 1.055,
+            CARD_HEIGHT_METERS * 1.055,
+          );
+          const faceModel = orientedPlaneMatrix(
+            addVec3(worldCard.position, scaleVec3(worldCard.normal, 0.004)),
+            worldCard.right,
+            worldCard.vertical,
+            CARD_WIDTH_METERS,
+            CARD_HEIGHT_METERS,
+          );
+
+          drawPlane(borderModel, viewProjection, [0.035, 0.035, 0.04], 0.92);
+          drawPlane(faceModel, viewProjection, faceColor, 0.98);
+          drawnObjects += 2;
+        }
       }
 
       emitDebug(
         time,
         pose.views.length,
         drawnObjects,
-        planeCenter ? "AR tracking active; DOM cards attached to phone" : "Waiting to lock floor plane",
+        planeCenter ? "AR tracking active; thrown cards live in world physics" : "Waiting to lock floor plane",
       );
     };
 
@@ -668,6 +869,7 @@ export async function createArEngine({
         plane: null,
         card: null,
         activeCardId: activeCard?.id ?? null,
+        worldCardCount: worldCards.length,
         message: "XR session started; waiting for local-floor pose",
       }),
     );
@@ -677,7 +879,7 @@ export async function createArEngine({
         activeCard = card;
       },
       setConfig,
-      throwCard: () => undefined,
+      throwCard: spawnWorldCard,
       stop: () => {
         if (ended) {
           return;
