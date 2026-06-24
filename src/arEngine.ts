@@ -9,6 +9,8 @@ export type ArCard = {
   color: ArCardColor;
 };
 
+export const AR_PROOF_BUILD = "ar-floor-proof-2026-06-24-02";
+
 export type ArThrowGesture = {
   unitX: number;
   unitY: number;
@@ -285,6 +287,7 @@ function createDebug({
     `drawnObjects=${drawnObjects}`,
     `planeLocked=${planeLocked}`,
     `referenceSpace=${referenceSpace}`,
+    `build=${AR_PROOF_BUILD}`,
     `camera=${formatVec(camera)}`,
     `plane=${formatVec(plane)}`,
     `userAgent=${navigator.userAgent}`,

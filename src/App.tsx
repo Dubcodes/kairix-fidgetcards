@@ -11,7 +11,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { flushSync } from "react-dom";
-import { createArEngine, getArUnavailableMessage, type ArDebugState, type ArEngine } from "./arEngine";
+import { AR_PROOF_BUILD, createArEngine, getArUnavailableMessage, type ArDebugState, type ArEngine } from "./arEngine";
 
 type CardColor = {
   hue: number;
@@ -1284,6 +1284,7 @@ export default function App() {
 
       {lookMode ? (
         <section className={`lookMode lookMode-${lookMode} ar-${arStatus}`} aria-label="AR throw mode">
+          <div className="arBuildBadge">{AR_PROOF_BUILD}</div>
           <div className="lookModeLabel">{lookModeMessage}</div>
           {!isArReady ? (
             <div className="arModeNotice" role="status" aria-live="polite">
