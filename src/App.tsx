@@ -1,5 +1,5 @@
 import { animate, motion, useAnimationControls, useMotionValue, type PanInfo } from "framer-motion";
-import { Eye, EyeOff, Maximize2, Minimize2, RotateCcw } from "lucide-react";
+import { ClipboardCopy, Eye, EyeOff, Maximize2, Minimize2, RotateCcw } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -139,6 +139,10 @@ const COMBO_WINDOW_MS = 850;
 const EYE_LONG_PRESS_MS = 620;
 const MIN_FLIGHT_DURATION = 0.22;
 const MAX_FLIGHT_DURATION = 3.8;
+const DRAG_SAMPLE_WINDOW_MS = 120;
+const DRAG_SAMPLE_LIMIT = 8;
+const MOTION_TRACE_LIMIT = 900;
+const FLIGHT_TRACE_INTERVAL_MS = 50;
 const AR_CARD_ANGLE = 34;
 const AR_DEFAULT_CARD_DISTANCE = 0.82;
 const AR_DEFAULT_CARD_TILT = 34;
@@ -260,13 +264,32 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
-function rotationFromGrab(grab: Point, offsetX: number, offsetY: number, velocityX = 0, velocityY = 0) {
+function rotationFromGrab(grab: Point, offsetX: number, offsetY: number) {
   const lever = Math.max(20, Math.hypot(grab.x, grab.y));
   const torque = (grab.x * offsetY - grab.y * offsetX) / (lever * 18);
-  const velocityTorque = (grab.x * velocityY - grab.y * velocityX) / (lever * 120);
   const drift = offsetX / 68;
 
-  return clamp(torque + velocityTorque + drift, -62, 62);
+  return clamp(torque + drift, -62, 62);
+}
+
+function sampleSlope(samples: DragSample[], select: (sample: DragSample) => number) {
+  if (samples.length < 2) {
+    return 0;
+  }
+
+  const origin = samples[samples.length - 1].time;
+  const meanTime = samples.reduce((total, sample) => total + (sample.time - origin) / 1000, 0) / samples.length;
+  const meanValue = samples.reduce((total, sample) => total + select(sample), 0) / samples.length;
+  let covariance = 0;
+  let variance = 0;
+
+  for (const sample of samples) {
+    const relativeTime = (sample.time - origin) / 1000 - meanTime;
+    covariance += relativeTime * (select(sample) - meanValue);
+    variance += relativeTime * relativeTime;
+  }
+
+  return variance > 0.000001 ? covariance / variance : 0;
 }
 
 function getLineCount(count: number, cardId: number) {
@@ -860,6 +883,9 @@ export default function App() {
   const grabPoint = useRef<Point>({ x: 0, y: 0 });
   const grabOriginRef = useRef("50% 50%");
   const dragSamplesRef = useRef<DragSample[]>([]);
+  const motionTraceRef = useRef<string[]>([]);
+  const traceStartedAtRef = useRef(performance.now());
+  const flightTraceAtRef = useRef(new Map<number, number>());
   const eyeHoldTimer = useRef<number | null>(null);
   const eyeLongPressed = useRef(false);
   const arEngineRef = useRef<ArEngine | null>(null);
@@ -912,57 +938,97 @@ export default function App() {
     return () => window.clearTimeout(timeout);
   }, [combo]);
 
-  function recordDragSample(offsetX: number, offsetY: number, rotation: number) {
+  const appendMotionTrace = useCallback(
+    (event: string, values: Record<string, string | number | boolean | null | undefined> = {}) => {
+      const elapsed = performance.now() - traceStartedAtRef.current;
+      const fields = Object.entries(values)
+        .filter(([, value]) => value !== undefined)
+        .map(([key, value]) => `${key}=${typeof value === "number" ? value.toFixed(3) : value}`)
+        .join(" ");
+      const line = `${elapsed.toFixed(1)}ms ${event}${fields ? ` ${fields}` : ""}`;
+
+      motionTraceRef.current.push(line);
+
+      if (motionTraceRef.current.length > MOTION_TRACE_LIMIT) {
+        motionTraceRef.current.splice(0, motionTraceRef.current.length - MOTION_TRACE_LIMIT);
+      }
+    },
+    [],
+  );
+
+  function recordDragSample(
+    offsetX: number,
+    offsetY: number,
+    rotation: number,
+    pointerVelocityX = 0,
+    pointerVelocityY = 0,
+  ) {
     const now = performance.now();
-    const samples = [...dragSamplesRef.current, { time: now, x: offsetX, y: offsetY, rotate: rotation }]
-      .filter((sample) => now - sample.time <= 180)
-      .slice(-8);
+    const sample = { time: now, x: offsetX, y: offsetY, rotate: rotation };
+    const samples = [...dragSamplesRef.current, sample]
+      .filter((candidate) => now - candidate.time <= DRAG_SAMPLE_WINDOW_MS)
+      .slice(-DRAG_SAMPLE_LIMIT);
 
     dragSamplesRef.current = samples;
+    const angle = (rotation * Math.PI) / 180;
+    const rotatedGrabX = grabPoint.current.x * Math.cos(angle) - grabPoint.current.y * Math.sin(angle);
+    const rotatedGrabY = grabPoint.current.x * Math.sin(angle) + grabPoint.current.y * Math.cos(angle);
+
+    appendMotionTrace("drag", {
+      card: topCard.id,
+      x: offsetX,
+      y: offsetY,
+      rotate: rotation,
+      centerShiftX: grabPoint.current.x - rotatedGrabX,
+      centerShiftY: grabPoint.current.y - rotatedGrabY,
+      pointerVx: pointerVelocityX,
+      pointerVy: pointerVelocityY,
+    });
   }
 
   function estimateRelease(info: PanInfo) {
     const now = performance.now();
-    const finalRotation = rotationFromGrab(grabPoint.current, info.offset.x, info.offset.y, info.velocity.x, info.velocity.y);
-    const samples = [
-      ...dragSamplesRef.current,
-      {
-        time: now,
-        x: info.offset.x,
-        y: info.offset.y,
-        rotate: finalRotation,
-      },
-    ]
-      .filter((sample) => now - sample.time <= 180)
-      .slice(-8);
-    const latest = samples[samples.length - 1] ?? {
-      time: now,
-      x: info.offset.x,
-      y: info.offset.y,
-      rotate: finalRotation,
-    };
+    const finalRotation = rotationFromGrab(grabPoint.current, info.offset.x, info.offset.y);
+    const finalSample = { time: now, x: info.offset.x, y: info.offset.y, rotate: finalRotation };
+    const samples = [...dragSamplesRef.current, finalSample]
+      .filter((sample) => now - sample.time <= DRAG_SAMPLE_WINDOW_MS)
+      .slice(-DRAG_SAMPLE_LIMIT);
+    const latest = samples[samples.length - 1] ?? finalSample;
+    const first = samples[0] ?? latest;
+    const historyDuration = latest.time - first.time;
+    const useSampledVelocity = samples.length >= 3 && historyDuration >= 24;
 
     dragSamplesRef.current = samples;
 
-    const earliest =
-      [...samples].reverse().find((sample) => latest.time - sample.time >= 28) ??
-      samples[0] ??
-      latest;
-    const deltaSeconds = Math.max(0.016, (latest.time - earliest.time) / 1000);
-    const sampledVelocityX = (latest.x - earliest.x) / deltaSeconds;
-    const sampledVelocityY = (latest.y - earliest.y) / deltaSeconds;
-    const sampledAngularVelocity = (latest.rotate - earliest.rotate) / deltaSeconds;
-    const fallbackVelocity = Math.hypot(info.velocity.x, info.velocity.y);
-    const sampledVelocity = Math.hypot(sampledVelocityX, sampledVelocityY);
+    const sampledVelocityX = sampleSlope(samples, (sample) => sample.x);
+    const sampledVelocityY = sampleSlope(samples, (sample) => sample.y);
+    const sampledAngularVelocity = sampleSlope(samples, (sample) => sample.rotate);
+    const velocityX = clamp(useSampledVelocity ? sampledVelocityX : info.velocity.x, -5200, 5200);
+    const velocityY = clamp(useSampledVelocity ? sampledVelocityY : info.velocity.y, -5200, 5200);
+    const angularVelocity = clamp(useSampledVelocity ? sampledAngularVelocity : 0, -420, 420);
+
+    appendMotionTrace("release", {
+      card: topCard.id,
+      samples: samples.length,
+      sampleMs: historyDuration,
+      x: latest.x,
+      y: latest.y,
+      pointerX: info.point.x,
+      pointerY: info.point.y,
+      rotate: latest.rotate,
+      velocityX,
+      velocityY,
+      angularVelocity,
+    });
 
     return {
       offsetX: latest.x,
       offsetY: latest.y,
       rotate: latest.rotate,
-      velocityX: sampledVelocity > 24 ? sampledVelocityX : info.velocity.x,
-      velocityY: sampledVelocity > 24 ? sampledVelocityY : info.velocity.y,
-      angularVelocity: Math.abs(sampledAngularVelocity) > 8 ? sampledAngularVelocity : 0,
-      velocity: sampledVelocity > 24 ? sampledVelocity : fallbackVelocity,
+      velocityX,
+      velocityY,
+      angularVelocity,
+      velocity: Math.hypot(velocityX, velocityY),
     };
   }
 
@@ -1005,9 +1071,10 @@ export default function App() {
       const targetRotateX = isLookThrow ? clamp(AR_CARD_ANGLE + 18 + throwSpeed / 260, 58, 88) : 0;
       const targetRotateY = isLookThrow ? clamp(-unitX * 42, -54, 54) : 0;
       const targetScale = isLookThrow ? clamp(920 / (920 + forwardDistance * 0.62), 0.24, 0.78) : 0.98;
+      const angularTravelSeconds = (1 - Math.exp(-2.4 * duration)) / 2.4;
       const targetRotate = isLookThrow
         ? startRotate
-        : startRotate + clamp(angularVelocity * duration * 0.72 + releaseVelocityX / 120, -780, 780);
+        : startRotate + clamp(angularVelocity * angularTravelSeconds, -360, 360);
       const nextFlightId = flightId.current + 1;
       const nextThrown = thrownRef.current + 1;
       const now = Date.now();
@@ -1018,6 +1085,20 @@ export default function App() {
       particleId.current = nextParticleId;
       thrownRef.current = nextThrown;
       lastThrowAt.current = now;
+      appendMotionTrace("throw-commit", {
+        card: topCard.id,
+        mode: isLookThrow ? "ar" : "2d",
+        startX,
+        startY,
+        startRotate,
+        velocityX: releaseVelocityX,
+        velocityY: releaseVelocityY,
+        angularVelocity,
+        targetX,
+        targetY,
+        targetRotate,
+        duration,
+      });
 
       if (isLookThrow) {
         arEngineRef.current?.throwCard(topCard, {
@@ -1080,10 +1161,11 @@ export default function App() {
       setCombo((value) => (now - previousThrowAt < COMBO_WINDOW_MS ? value + 1 : 1));
       vibrate();
     },
-    [arStatus, controls, lookMode, rotate, topCard, x, y],
+    [appendMotionTrace, arStatus, controls, lookMode, rotate, topCard, x, y],
   );
 
   const snapBack = useCallback(async () => {
+    appendMotionTrace("snap-back", { card: topCard.id, x: x.get(), y: y.get(), rotate: rotate.get() });
     controls.set({ opacity: 1, scale: 1 });
 
     await Promise.all([
@@ -1093,7 +1175,7 @@ export default function App() {
     ]);
     grabOriginRef.current = "50% 50%";
     setGrabOrigin("50% 50%");
-  }, [controls, rotate, x, y]);
+  }, [appendMotionTrace, controls, rotate, topCard.id, x, y]);
 
   const throwFromInput = useCallback(
     async (
@@ -1115,9 +1197,7 @@ export default function App() {
 
       const directionX = velocityX || offsetX || (Math.random() > 0.5 ? 1 : -1);
       const directionY = velocityY || offsetY || -1;
-      const contactAngularVelocity =
-        distance > 0 ? (grabPoint.current.x * velocityY - grabPoint.current.y * velocityX) / 14 : 0;
-      const releaseAngularVelocity = clamp(angularVelocity + contactAngularVelocity, -960, 960);
+      const releaseAngularVelocity = clamp(angularVelocity, -420, 420);
 
       completeThrow(
         directionX,
@@ -1158,15 +1238,24 @@ export default function App() {
     };
     grabOriginRef.current = `${originX}px ${originY}px`;
     dragSamplesRef.current = [];
+    appendMotionTrace("pointer-down", {
+      card: topCard.id,
+      screenX: event.clientX,
+      screenY: event.clientY,
+      grabX: grabPoint.current.x,
+      grabY: grabPoint.current.y,
+      cardCenterX: rect.left + rect.width / 2,
+      cardCenterY: rect.top + rect.height / 2,
+    });
     recordDragSample(0, 0, rotate.get());
     setGrabOrigin(grabOriginRef.current);
   }
 
   function rotateDuringDrag(info: PanInfo) {
-    const nextRotate = rotationFromGrab(grabPoint.current, info.offset.x, info.offset.y, info.velocity.x, info.velocity.y);
+    const nextRotate = rotationFromGrab(grabPoint.current, info.offset.x, info.offset.y);
 
     rotate.set(nextRotate);
-    recordDragSample(info.offset.x, info.offset.y, nextRotate);
+    recordDragSample(info.offset.x, info.offset.y, nextRotate, info.velocity.x, info.velocity.y);
   }
 
   async function toggleFullscreen() {
@@ -1287,12 +1376,27 @@ export default function App() {
     setShowControls((value) => !value);
   }
 
-  async function copyArDiagnostics() {
-    if (!arDebug?.text) {
-      return;
-    }
+  async function copyMotionDiagnostics() {
+    const appTrace = motionTraceRef.current.join("\n") || "No screen motion recorded";
+    const arTrace = arEngineRef.current?.getMotionTrace() || "No AR motion recorded";
+    const report = [
+      `build=${AR_PROOF_BUILD}`,
+      `mode=${lookMode ?? "2d"}`,
+      `viewport=${window.innerWidth}x${window.innerHeight}`,
+      `devicePixelRatio=${window.devicePixelRatio || 1}`,
+      `userAgent=${navigator.userAgent}`,
+      "",
+      "AR SUMMARY",
+      arDebug?.text ?? "AR inactive",
+      "",
+      "SCREEN MOTION TRACE",
+      appTrace,
+      "",
+      "AR WORLD MOTION TRACE",
+      arTrace,
+    ].join("\n");
 
-    await navigator.clipboard?.writeText(arDebug.text).catch(() => undefined);
+    await navigator.clipboard?.writeText(report).catch(() => undefined);
   }
 
   useEffect(() => {
@@ -1397,6 +1501,15 @@ export default function App() {
         ) : null}
         {showControls ? (
           <>
+            <button
+              className="iconButton"
+              type="button"
+              onClick={() => void copyMotionDiagnostics()}
+              aria-label="Copy motion diagnostics"
+              title="Copy motion diagnostics"
+            >
+              <ClipboardCopy size={17} strokeWidth={2.4} />
+            </button>
             <button className="iconButton reset" type="button" onClick={resetCounter} aria-label="Reset counter" title="Reset counter">
               <RotateCcw size={17} strokeWidth={2.4} />
             </button>
@@ -1510,8 +1623,8 @@ export default function App() {
               {arDebug ? (
                 <>
                   <textarea className="arDebugText" value={arDebug.text} readOnly aria-label="AR diagnostics" />
-                  <button className="arCopyButton" type="button" onClick={() => void copyArDiagnostics()}>
-                    Copy diagnostics
+                  <button className="arCopyButton" type="button" onClick={() => void copyMotionDiagnostics()}>
+                    Copy full motion trace
                   </button>
                 </>
               ) : null}
@@ -1579,7 +1692,32 @@ export default function App() {
               duration: card.duration,
               ease: "linear",
             }}
+            onUpdate={(latest) => {
+              const now = performance.now();
+              const previous = flightTraceAtRef.current.get(card.flightId) ?? 0;
+
+              if (now - previous < FLIGHT_TRACE_INTERVAL_MS) {
+                return;
+              }
+
+              flightTraceAtRef.current.set(card.flightId, now);
+              appendMotionTrace("2d-flight", {
+                flight: card.flightId,
+                card: card.id,
+                x: Number(latest.x ?? 0),
+                y: Number(latest.y ?? 0),
+                rotate: Number(latest.rotate ?? 0),
+              });
+            }}
             onAnimationComplete={() => {
+              flightTraceAtRef.current.delete(card.flightId);
+              appendMotionTrace("2d-flight-end", {
+                flight: card.flightId,
+                card: card.id,
+                x: card.targetX,
+                y: card.targetY,
+                rotate: card.targetRotate,
+              });
               setFlyingCards((value) => value.filter((flyingCard) => flyingCard.flightId !== card.flightId));
             }}
             style={{
